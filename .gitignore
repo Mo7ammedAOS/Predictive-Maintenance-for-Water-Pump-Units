@@ -1,0 +1,26 @@
+# Virtual environments
+venv/
+env/
+project/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Large data files (uncomment if needed)
+# data/*.csv
+# *.h5
+# *.pkl
