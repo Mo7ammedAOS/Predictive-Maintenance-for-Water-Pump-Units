@@ -420,3 +420,46 @@ def plot_sensor_time_series(df: pd.DataFrame,
     )
     
     return fig
+
+
+def plot_correlation_heatmap(df: pd.DataFrame, 
+                             top_n: int = 20) -> go.Figure:
+    """
+    Create correlation heatmap for top sensors
+    
+    Args:
+        df: DataFrame with sensor data
+        top_n: Number of sensors to include
+    
+    Returns:
+        Plotly figure object
+    """
+    # Select numeric columns only
+    numeric_df = df.select_dtypes(include=[np.number])
+    
+    # Get top N columns by variance (most informative)
+    variances = numeric_df.var().sort_values(ascending=False)
+    top_cols = variances.head(top_n).index.tolist()
+    
+    corr_matrix = numeric_df[top_cols].corr()
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=corr_matrix.values,
+        x=corr_matrix.columns,
+        y=corr_matrix.columns,
+        colorscale='RdBu',
+        zmid=0,
+        text=corr_matrix.values.round(2),
+        texttemplate='%{text}',
+        textfont={"size": 8},
+        colorbar=dict(title="Correlation")
+    ))
+    
+    fig.update_layout(
+        title=f'Correlation Heatmap - Top {top_n} Sensors',
+        template='plotly_white',
+        height=600,
+        width=700
+    )
+    
+    return fig

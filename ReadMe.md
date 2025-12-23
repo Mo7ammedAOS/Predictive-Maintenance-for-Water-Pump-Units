@@ -370,8 +370,6 @@ If you find this project useful, please consider giving it a star! ⭐
 
 1. Scikit-learn Documentation: https://scikit-learn.org/
 2. XGBoost Documentation: https://xgboost.readthedocs.io/
-3. Time Series Cross-Validation: [Paper/Link]
-4. Predictive Maintenance Best Practices: [Resource]
 
 ---
 
