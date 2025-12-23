@@ -1,6 +1,6 @@
 """
 Model Training and Evaluation Utilities
-Handles ML model training, optimization, and evaluation
+Handles patient ML model training, optimization, and evaluation
 """
 
 import numpy as np
@@ -9,10 +9,15 @@ from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
-from sklearn.metrics import f1_score, confusion_matrix, classification_report
+from sklearn.metrics import (
+    f1_score, confusion_matrix, classification_report, 
+    accuracy_score, precision_recall_fscore_support
+)
 from typing import Dict, Tuple, Any
 import joblib
 import streamlit as st
+import warnings
+warnings.filterwarnings("ignore")
 
 
 class ModelTrainer:
@@ -23,6 +28,7 @@ class ModelTrainer:
         self.models = {}
         self.best_params = {}
         self.results = {}
+        self.training_history = []
     
     def train_logistic_regression(self, 
                                  X_train: pd.DataFrame, 
@@ -30,7 +36,7 @@ class ModelTrainer:
                                  cv_folds: int = 5) -> Dict:
         """Train and optimize Logistic Regression model"""
         
-        model = LogisticRegression(n_jobs=-1, random_state=self.random_state)
+        model = LogisticRegression(n_jobs=-1, random_state=self.random_state, max_iter=1000)
         
         param_grid = {
             'C': [0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000]
@@ -51,6 +57,7 @@ class ModelTrainer:
         
         self.models['Logistic Regression'] = grid_search.best_estimator_
         self.best_params['Logistic Regression'] = grid_search.best_params_
+        self.training_history.append(('Logistic Regression', 'Grid Search Complete'))
         
         return {
             'model': grid_search.best_estimator_,
@@ -69,7 +76,8 @@ class ModelTrainer:
             loss="hinge", 
             penalty='l2', 
             n_jobs=-1, 
-            random_state=self.random_state
+            random_state=self.random_state,
+            max_iter=1000
         )
         
         param_grid = {
@@ -91,6 +99,7 @@ class ModelTrainer:
         
         self.models['SVM'] = grid_search.best_estimator_
         self.best_params['SVM'] = grid_search.best_params_
+        self.training_history.append(('SVM', 'Grid Search Complete'))
         
         return {
             'model': grid_search.best_estimator_,
@@ -103,14 +112,16 @@ class ModelTrainer:
                            X_train: pd.DataFrame, 
                            y_train: pd.Series,
                            cv_folds: int = 5) -> Dict:
-        """Train and optimize Random Forest model"""
+        """Train and optimize Random Forest model - PATIENCE REQUIRED"""
         
         model = RandomForestClassifier(
             criterion='gini',
             random_state=self.random_state,
-            n_jobs=-1
+            n_jobs=-1,
+            verbose=1
         )
         
+        # Extended parameter grid for thorough search
         param_grid = {
             'n_estimators': [10, 25, 50, 100, 150, 200],
             'max_depth': [1, 3, 5, 10, 20, 30, 50]
@@ -124,13 +135,15 @@ class ModelTrainer:
             cv=folds,
             scoring='f1_macro',
             n_jobs=-1,
-            return_train_score=True
+            return_train_score=True,
+            verbose=2
         )
         
         grid_search.fit(X_train, y_train)
         
         self.models['Random Forest'] = grid_search.best_estimator_
         self.best_params['Random Forest'] = grid_search.best_params_
+        self.training_history.append(('Random Forest', f"Best params: {grid_search.best_params_}"))
         
         return {
             'model': grid_search.best_estimator_,
@@ -143,10 +156,14 @@ class ModelTrainer:
                      X_train: pd.DataFrame, 
                      y_train: pd.Series,
                      cv_folds: int = 5) -> Dict:
-        """Train and optimize XGBoost model"""
+        """Train and optimize XGBoost model - PATIENCE REQUIRED"""
         
-        model = XGBClassifier(random_state=self.random_state)
+        model = XGBClassifier(
+            random_state=self.random_state,
+            verbosity=1
+        )
         
+        # Extended parameter grid
         param_grid = {
             'n_estimators': [5, 10, 20, 30, 40, 50],
             'max_depth': [1, 3, 5, 7, 10, 20, 30]
@@ -160,13 +177,15 @@ class ModelTrainer:
             cv=folds,
             scoring='f1_macro',
             n_jobs=-1,
-            return_train_score=True
+            return_train_score=True,
+            verbose=2
         )
         
         grid_search.fit(X_train, y_train)
         
         self.models['XGBoost'] = grid_search.best_estimator_
         self.best_params['XGBoost'] = grid_search.best_params_
+        self.training_history.append(('XGBoost', f"Best params: {grid_search.best_params_}"))
         
         return {
             'model': grid_search.best_estimator_,
@@ -179,7 +198,7 @@ class ModelTrainer:
                       model_name: str,
                       X_test: pd.DataFrame, 
                       y_test: pd.Series) -> Dict:
-        """Evaluate a trained model on test data"""
+        """Evaluate a trained model on test data with comprehensive metrics"""
         
         if model_name not in self.models:
             raise ValueError(f"Model {model_name} not trained yet")
@@ -187,18 +206,34 @@ class ModelTrainer:
         model = self.models[model_name]
         y_pred = model.predict(X_test)
         
+        # Calculate comprehensive metrics
         f1_macro = f1_score(y_test, y_pred, average='macro')
+        f1_weighted = f1_score(y_test, y_pred, average='weighted')
+        accuracy = accuracy_score(y_test, y_pred)
         cm = confusion_matrix(y_test, y_pred)
-        report = classification_report(y_test, y_pred, output_dict=True)
         
-        misclassifications = (y_test != y_pred).sum()
+        # Get precision and recall for each class
+        precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_pred)
+        
+        # Count misclassifications for broken state (class 0)
+        misclassifications_total = (y_test != y_pred).sum()
+        broken_false_negatives = cm[0, 1]  # Broken predicted as Normal
+        broken_false_positives = cm[1, 0]  # Normal predicted as Broken
+        
+        report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
         
         self.results[model_name] = {
             'f1_macro': f1_macro,
+            'f1_weighted': f1_weighted,
+            'accuracy': accuracy,
             'confusion_matrix': cm,
             'classification_report': report,
-            'misclassifications': misclassifications,
-            'accuracy': (y_test == y_pred).sum() / len(y_test)
+            'misclassifications': int(misclassifications_total),
+            'broken_false_negatives': int(broken_false_negatives),
+            'broken_false_positives': int(broken_false_positives),
+            'precision': precision,
+            'recall': recall,
+            'f1_per_class': f1
         }
         
         return self.results[model_name]
@@ -244,94 +279,29 @@ class ModelTrainer:
         comparison = []
         
         for model_name in self.results:
+            result = self.results[model_name]
             comparison.append({
                 'Model': model_name,
-                'Macro F1 Score': round(self.results[model_name]['f1_macro'], 4),
-                'Accuracy': round(self.results[model_name]['accuracy'], 4),
-                'Misclassifications': self.results[model_name]['misclassifications'],
+                'Accuracy': round(result['accuracy'], 4),
+                'F1 Macro': round(result['f1_macro'], 4),
+                'F1 Weighted': round(result['f1_weighted'], 4),
+                'Broken Recall': round(result['recall'][0], 4),  # Recall for class 0 (BROKEN)
+                'Normal Recall': round(result['recall'][1], 4),  # Recall for class 1 (NORMAL)
+                'False Negatives': result['broken_false_negatives'],
+                'False Positives': result['broken_false_positives'],
+                'Total Misclassifications': result['misclassifications'],
                 'Best Parameters': str(self.best_params.get(model_name, {}))
             })
         
         comparison_df = pd.DataFrame(comparison)
-        comparison_df = comparison_df.sort_values('Macro F1 Score', ascending=False)
+        
+        # Sort by: Lower False Negatives (most important), then higher Accuracy
+        comparison_df = comparison_df.sort_values(
+            by=['False Negatives', 'Accuracy'],
+            ascending=[True, False]
+        )
         
         return comparison_df
-
-
-def calculate_shap_importance(model: Any, 
-                             X_sample: pd.DataFrame,
-                             sample_size: int = 1000) -> Tuple[np.ndarray, pd.DataFrame]:
-    """
-    Calculate SHAP values for feature importance
-    
-    Args:
-        model: Trained model
-        X_sample: Sample of features to explain
-        sample_size: Number of samples to use
-    
-    Returns:
-        Tuple of (shap_values, importance_df)
-    """
-    import shap
-    
-    # Sample data if too large
-    if len(X_sample) > sample_size:
-        X_sample = X_sample.sample(n=sample_size, random_state=42)
-    
-    # Create explainer
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X_sample)
-    
-    # Handle different output formats
-    if isinstance(shap_values, list):
-        shap_values_plot = shap_values[1]
-    else:
-        shap_values_plot = shap_values
-    
-    # Calculate mean absolute SHAP values
-    shap_importance = np.abs(shap_values_plot).mean(axis=0)
-    
-    if len(shap_importance.shape) > 1:
-        shap_importance = shap_importance.mean(axis=1)
-    
-    # Create importance DataFrame
-    importance_df = pd.DataFrame({
-        'Feature': X_sample.columns,
-        'SHAP_Importance': shap_importance
-    }).sort_values('SHAP_Importance', ascending=False)
-    
-    return shap_values_plot, importance_df
-
-
-@st.cache_resource
-def train_all_models(X_train: pd.DataFrame, 
-                    y_train: pd.Series,
-                    X_test: pd.DataFrame,
-                    y_test: pd.Series) -> ModelTrainer:
-    """
-    Train all models and return trainer object
-    Cached to avoid retraining
-    """
-    
-    trainer = ModelTrainer()
-    
-    with st.spinner('Training Logistic Regression...'):
-        trainer.train_logistic_regression(X_train, y_train)
-        trainer.evaluate_model('Logistic Regression', X_test, y_test)
-    
-    with st.spinner('Training SVM...'):
-        trainer.train_svm(X_train, y_train)
-        trainer.evaluate_model('SVM', X_test, y_test)
-    
-    with st.spinner('Training Random Forest...'):
-        trainer.train_random_forest(X_train, y_train)
-        trainer.evaluate_model('Random Forest', X_test, y_test)
-    
-    with st.spinner('Training XGBoost...'):
-        trainer.train_xgboost(X_train, y_train)
-        trainer.evaluate_model('XGBoost', X_test, y_test)
-    
-    return trainer
 
 
 def predict_with_confidence(model: Any, 
@@ -382,7 +352,7 @@ def get_maintenance_recommendation(probability: float,
     if probability < threshold_low:
         return {
             'status': 'NORMAL',
-            'color': 'green',
+            'color': '#2ca02c',
             'icon': '✅',
             'message': 'Normal Operation - No Action Required',
             'description': 'Machine is operating within normal parameters. Continue regular monitoring.',
@@ -391,7 +361,7 @@ def get_maintenance_recommendation(probability: float,
     elif probability < threshold_high:
         return {
             'status': 'WARNING',
-            'color': 'orange',
+            'color': '#ff7f0e',
             'icon': '⚠️',
             'message': 'Schedule Preventive Maintenance',
             'description': 'Elevated risk detected. Schedule maintenance within the next 24-48 hours.',
@@ -400,7 +370,7 @@ def get_maintenance_recommendation(probability: float,
     else:
         return {
             'status': 'CRITICAL',
-            'color': 'red',
+            'color': '#d62728',
             'icon': '🚨',
             'message': 'Immediate Maintenance Required',
             'description': 'High failure risk! Stop operations and perform immediate inspection.',
@@ -426,11 +396,12 @@ def calculate_cost_savings(failures_prevented: int,
     total_savings = failures_prevented * cost_per_failure
     net_savings = total_savings - implementation_cost
     roi = (net_savings / implementation_cost) * 100 if implementation_cost > 0 else 0
+    payback_months = (implementation_cost / (total_savings / 12)) if total_savings > 0 else float('inf')
     
     return {
         'total_savings': total_savings,
         'implementation_cost': implementation_cost,
         'net_savings': net_savings,
         'roi_percentage': roi,
-        'payback_period_months': (implementation_cost / (total_savings / 12)) if total_savings > 0 else 0
+        'payback_period_months': payback_months
     }

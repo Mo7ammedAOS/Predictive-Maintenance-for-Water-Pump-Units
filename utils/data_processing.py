@@ -1,12 +1,12 @@
 """
 Data Processing Utilities for Predictive Maintenance
-Handles data loading, preprocessing, and feature engineering
+Handles complete data pipeline from loading to feature engineering
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from typing import Tuple, List
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder
+from typing import Tuple, List, Dict
 import streamlit as st
 
 
@@ -29,7 +29,11 @@ def load_sensor_data(file_path: str = None, uploaded_file=None) -> pd.DataFrame:
     else:
         raise ValueError("Either file_path or uploaded_file must be provided")
     
-    # Drop unnamed columns if they exist
+    # Drop unnamed index column if exists
+    if 'Unnamed: 0' in df.columns:
+        df = df.drop(columns=['Unnamed: 0'])
+    
+    # Drop any other unnamed columns
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
     
     return df
@@ -38,7 +42,7 @@ def load_sensor_data(file_path: str = None, uploaded_file=None) -> pd.DataFrame:
 def preprocess_data(df: pd.DataFrame, 
                     drop_sensors: List[str] = ['sensor_15']) -> pd.DataFrame:
     """
-    Preprocess sensor data: handle missing values, drop problematic sensors
+    Preprocess sensor data: drop problematic sensors and handle missing values
     
     Args:
         df: Raw sensor DataFrame
@@ -49,12 +53,16 @@ def preprocess_data(df: pd.DataFrame,
     """
     df_clean = df.copy()
     
-    # Drop specified sensors
+    # Drop status columns if present (will be recreated)
+    if 'machine_status_updated' in df_clean.columns:
+        df_clean = df_clean.drop(columns=['machine_status_updated'])
+    
+    # Drop specified problematic sensors
     for sensor in drop_sensors:
         if sensor in df_clean.columns:
-            df_clean.drop(columns=[sensor], inplace=True)
+            df_clean = df_clean.drop(columns=[sensor])
     
-    # Fill missing values with -1 (indicator value)
+    # Fill missing values with -1 (indicator value for missing)
     sensor_cols = [col for col in df_clean.columns 
                    if col.startswith('sensor_')]
     
@@ -78,9 +86,7 @@ def create_labels(df: pd.DataFrame,
     """
     df = df.copy()
     df['labels'] = df[status_col].map(lambda x: 1 if x == 'NORMAL' else 0)
-    df['machine_status_updated'] = df[status_col].map(
-        lambda x: 'NORMAL' if x == 'NORMAL' else 'BROKEN'
-    )
+    
     return df
 
 
@@ -88,11 +94,11 @@ def shift_labels(df: pd.DataFrame,
                  sensor_cols: List[str], 
                  shift_steps: int = 10) -> pd.DataFrame:
     """
-    Shift labels forward for predictive modeling
+    Shift labels forward for predictive modeling (10-minute advance warning)
     
     Args:
         df: DataFrame with sensor data and labels
-        sensor_cols: List of sensor column names
+        sensor_cols: List of sensor column names (excluding 'labels')
         shift_steps: Number of time steps to shift (default: 10 minutes)
     
     Returns:
@@ -121,7 +127,7 @@ def generate_deviation_features(df: pd.DataFrame,
     normal_df = df[df['labels'] == 1]
     
     for sensor in sensor_cols:
-        if sensor != 'labels':
+        if sensor != 'labels' and sensor in df.columns:
             normal_mean = normal_df[sensor].mean()
             new_features[f'{sensor}_deviation'] = df[sensor] - normal_mean
     
@@ -134,12 +140,12 @@ def generate_window_features(df: pd.DataFrame,
                              sensor_cols: List[str],
                              window_size: int = 10) -> pd.DataFrame:
     """
-    Generate time window features using rolling mean
+    Generate time window features using shifted values (10-min window aggregation)
     
     Args:
         df: DataFrame with sensor data and labels
         sensor_cols: List of sensor column names
-        window_size: Size of rolling window
+        window_size: Size of window
     
     Returns:
         DataFrame with window features
@@ -147,7 +153,7 @@ def generate_window_features(df: pd.DataFrame,
     new_df = df[sensor_cols].copy()
     
     for col in sensor_cols:
-        if col != 'labels':
+        if col != 'labels' and col in df.columns:
             new_df[col] = df[col].shift(window_size)
     
     new_df['labels'] = df['labels']
@@ -156,16 +162,16 @@ def generate_window_features(df: pd.DataFrame,
 
 
 def normalize_features(X_train: pd.DataFrame, 
-                      X_test: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                      X_test: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, MinMaxScaler]:
     """
-    Normalize features using MinMaxScaler
+    Normalize features using MinMaxScaler (0-1 range)
     
     Args:
         X_train: Training features
         X_test: Test features
     
     Returns:
-        Tuple of (normalized_train, normalized_test)
+        Tuple of (normalized_train, normalized_test, scaler)
     """
     scaler = MinMaxScaler()
     
@@ -190,7 +196,7 @@ def normalize_features(X_train: pd.DataFrame,
 def split_train_test(df: pd.DataFrame, 
                      train_size: int = 131000) -> Tuple:
     """
-    Split data into train and test sets
+    Split data into train and test sets using time-based split
     
     Args:
         df: DataFrame with features and labels
@@ -211,19 +217,23 @@ def split_train_test(df: pd.DataFrame,
 
 
 def get_class_distribution(df: pd.DataFrame, 
-                          col: str = 'labels') -> dict:
+                          col: str = 'labels') -> Dict:
     """
     Calculate class distribution statistics
     
     Args:
-        df: DataFrame
-        col: Column name to analyze
+        df: DataFrame or Series
+        col: Column name to analyze (if df is DataFrame)
     
     Returns:
         Dictionary with class counts and percentages
     """
-    value_counts = df[col].value_counts()
-    total = len(df)
+    if isinstance(df, pd.Series):
+        value_counts = df.value_counts()
+        total = len(df)
+    else:
+        value_counts = df[col].value_counts()
+        total = len(df)
     
     distribution = {}
     for label, count in value_counts.items():
@@ -261,8 +271,30 @@ def get_missing_value_stats(df: pd.DataFrame) -> pd.DataFrame:
     return missing_df
 
 
+def calculate_statistics(df: pd.DataFrame) -> Dict:
+    """
+    Calculate comprehensive dataset statistics
+    
+    Args:
+        df: DataFrame to analyze
+    
+    Returns:
+        Dictionary with various statistics
+    """
+    stats = {
+        'shape': df.shape,
+        'memory_usage': f"{df.memory_usage(deep=True).sum() / 1024**2:.2f} MB",
+        'numeric_columns': len(df.select_dtypes(include=[np.number]).columns),
+        'categorical_columns': len(df.select_dtypes(include=['object']).columns),
+        'missing_values': df.isna().sum().sum(),
+        'duplicate_rows': df.duplicated().sum()
+    }
+    
+    return stats
+
+
 @st.cache_data
-def generate_sample_data(n_samples: int = 100) -> pd.DataFrame:
+def generate_sample_data(n_samples: int = 1000) -> pd.DataFrame:
     """
     Generate sample sensor data for demonstration
     
@@ -276,14 +308,13 @@ def generate_sample_data(n_samples: int = 100) -> pd.DataFrame:
     
     data = {}
     
-    # Generate 58 sensor readings
+    # Generate 58 sensor readings (after removing sensor_15)
     for i in range(58):
-        # Normal readings: mean around 0.5, std 0.1
-        # Broken readings: mean around 0.3 or 0.7, std 0.15
         sensor_name = f'sensor_{i:02d}'
+        # Normal readings: mean around 0.5, std 0.1
         data[sensor_name] = np.random.normal(0.5, 0.1, n_samples)
     
-    # Add machine status (mostly normal)
+    # Add machine status (mostly normal to match real distribution)
     statuses = np.random.choice(
         ['NORMAL', 'BROKEN'], 
         size=n_samples, 
@@ -293,11 +324,11 @@ def generate_sample_data(n_samples: int = 100) -> pd.DataFrame:
     
     df = pd.DataFrame(data)
     
-    # Introduce some missing values
+    # Introduce some missing values realistically
     for col in df.columns[:10]:
         missing_idx = np.random.choice(
             df.index, 
-            size=int(len(df) * 0.05), 
+            size=int(len(df) * 0.02), 
             replace=False
         )
         df.loc[missing_idx, col] = np.nan
@@ -305,44 +336,74 @@ def generate_sample_data(n_samples: int = 100) -> pd.DataFrame:
     return df
 
 
-def prepare_for_prediction(sensor_readings: dict, 
-                          scaler: MinMaxScaler = None) -> pd.DataFrame:
+def prepare_complete_pipeline(uploaded_file=None, 
+                             file_path: str = None,
+                             feature_type: str = 'deviation') -> Dict:
     """
-    Prepare sensor readings for model prediction
+    Complete data preparation pipeline from raw data to normalized features
     
     Args:
-        sensor_readings: Dictionary of sensor values
-        scaler: Fitted MinMaxScaler object
+        uploaded_file: Streamlit uploaded file
+        file_path: Path to CSV file
+        feature_type: 'deviation' or 'window' for feature engineering
     
     Returns:
-        DataFrame ready for prediction
+        Dictionary containing all pipeline outputs and metadata
     """
-    df = pd.DataFrame([sensor_readings])
+    # Load data
+    if uploaded_file is not None or file_path is not None:
+        df_raw = load_sensor_data(file_path=file_path, uploaded_file=uploaded_file)
+    else:
+        df_raw = generate_sample_data(n_samples=5000)
     
-    if scaler is not None:
-        df_scaled = scaler.transform(df)
-        df = pd.DataFrame(df_scaled, columns=df.columns)
+    # Preprocess
+    df_clean = preprocess_data(df_raw)
     
-    return df
-
-
-def calculate_statistics(df: pd.DataFrame) -> dict:
-    """
-    Calculate comprehensive dataset statistics
+    # Create labels
+    df_labels = create_labels(df_clean)
     
-    Args:
-        df: DataFrame to analyze
+    # Get sensor columns
+    sensor_cols = [col for col in df_labels.columns 
+                   if col.startswith('sensor_')]
     
-    Returns:
-        Dictionary with various statistics
-    """
-    stats = {
-        'shape': df.shape,
-        'memory_usage': f"{df.memory_usage(deep=True).sum() / 1024**2:.2f} MB",
-        'numeric_columns': df.select_dtypes(include=[np.number]).columns.tolist(),
-        'categorical_columns': df.select_dtypes(include=['object']).columns.tolist(),
-        'missing_values': df.isna().sum().sum(),
-        'duplicate_rows': df.duplicated().sum()
+    # Shift labels for 10-minute advance warning
+    df_shifted = shift_labels(df_labels, sensor_cols)
+    
+    # Generate features based on type
+    if feature_type == 'deviation':
+        df_features = generate_deviation_features(df_shifted, sensor_cols)
+    else:  # window
+        df_features = generate_window_features(df_shifted, sensor_cols, window_size=10)
+    
+    # Split train/test
+    X_train, X_test, y_train, y_test = split_train_test(df_features)
+    
+    # Normalize
+    X_train_norm, X_test_norm, scaler = normalize_features(X_train, X_test)
+    
+    # Get statistics
+    class_dist_train = get_class_distribution(y_train)
+    class_dist_test = get_class_distribution(y_test)
+    
+    return {
+        'raw': df_raw,
+        'clean': df_clean,
+        'labels': df_labels,
+        'shifted': df_shifted,
+        'features': df_features,
+        'X_train': X_train_norm,
+        'X_test': X_test_norm,
+        'y_train': y_train,
+        'y_test': y_test,
+        'scaler': scaler,
+        'sensor_cols': sensor_cols,
+        'feature_type': feature_type,
+        'class_dist_train': class_dist_train,
+        'class_dist_test': class_dist_test,
+        'stats': {
+            'total_samples': len(df_features),
+            'total_features': len(sensor_cols),
+            'train_samples': len(X_train_norm),
+            'test_samples': len(X_test_norm),
+        }
     }
-    
-    return stats

@@ -7,21 +7,16 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
-import matplotlib.pyplot as plt
-import seaborn as sns
 from typing import List, Tuple
 import streamlit as st
 
 
-def plot_machine_status_timeline(df: pd.DataFrame, 
-                                 status_col: str = 'labels') -> go.Figure:
+def plot_machine_status_timeline(labels: pd.Series) -> go.Figure:
     """
     Create interactive timeline plot of machine status
     
     Args:
-        df: DataFrame with labels column
-        status_col: Name of the status column
+        labels: Series with binary labels (0=BROKEN, 1=NORMAL)
     
     Returns:
         Plotly figure object
@@ -29,8 +24,8 @@ def plot_machine_status_timeline(df: pd.DataFrame,
     fig = go.Figure()
     
     fig.add_trace(go.Scatter(
-        x=df.index,
-        y=df[status_col],
+        x=labels.index,
+        y=labels.values,
         mode='lines',
         name='Machine Status',
         line=dict(color='#1f77b4', width=2),
@@ -55,26 +50,30 @@ def plot_machine_status_timeline(df: pd.DataFrame,
     return fig
 
 
-def plot_class_distribution(df: pd.DataFrame, 
-                           col: str = 'labels') -> go.Figure:
+def plot_class_distribution(labels: pd.Series, col: str = None) -> go.Figure:
     """
     Create bar chart for class distribution
     
     Args:
-        df: DataFrame
-        col: Column to analyze
+        labels: Series with labels
+        col: Column name (optional)
     
     Returns:
         Plotly figure object
     """
-    value_counts = df[col].value_counts()
+    if isinstance(labels, pd.DataFrame):
+        labels = labels.iloc[:, 0]
     
-    colors = ['#2ca02c' if label == 1 else '#d62728' 
+    value_counts = labels.value_counts().sort_index()
+    
+    colors = ['#d62728' if label == 0 else '#2ca02c' 
               for label in value_counts.index]
+    
+    labels_text = ['BROKEN' if x == 0 else 'NORMAL' for x in value_counts.index]
     
     fig = go.Figure(data=[
         go.Bar(
-            x=['BROKEN' if x == 0 else 'NORMAL' for x in value_counts.index],
+            x=labels_text,
             y=value_counts.values,
             marker_color=colors,
             text=value_counts.values,
@@ -83,7 +82,7 @@ def plot_class_distribution(df: pd.DataFrame,
     ])
     
     fig.update_layout(
-        title=f'Class Distribution',
+        title='Class Distribution',
         xaxis_title='Machine Status',
         yaxis_title='Count',
         template='plotly_white',
@@ -108,6 +107,12 @@ def plot_missing_values(df: pd.DataFrame,
     null_count = df.isna().sum()
     null_count = null_count[null_count > 0].sort_values(ascending=True).tail(top_n)
     
+    if len(null_count) == 0:
+        # Return empty figure if no missing values
+        fig = go.Figure()
+        fig.add_annotation(text="No missing values detected", showarrow=False)
+        return fig
+    
     fig = go.Figure(data=[
         go.Bar(
             y=null_count.index,
@@ -120,9 +125,9 @@ def plot_missing_values(df: pd.DataFrame,
     ])
     
     fig.update_layout(
-        title=f'Top {top_n} Sensors with Missing Values',
+        title=f'Top {top_n} Columns with Missing Values',
         xaxis_title='Missing Value Count',
-        yaxis_title='Sensor',
+        yaxis_title='Column',
         template='plotly_white',
         height=600
     )
@@ -170,101 +175,6 @@ def plot_sensor_distribution(df: pd.DataFrame,
         barmode='overlay',
         template='plotly_white',
         height=400
-    )
-    
-    return fig
-
-
-def plot_correlation_heatmap(df: pd.DataFrame, 
-                             top_n: int = 20) -> go.Figure:
-    """
-    Create correlation heatmap for top sensors
-    
-    Args:
-        df: DataFrame with sensor data
-        top_n: Number of sensors to include
-    
-    Returns:
-        Plotly figure object
-    """
-    # Select numeric columns only
-    numeric_df = df.select_dtypes(include=[np.number])
-    
-    # Get top N columns by variance (most informative)
-    variances = numeric_df.var().sort_values(ascending=False)
-    top_cols = variances.head(top_n).index.tolist()
-    
-    corr_matrix = numeric_df[top_cols].corr()
-    
-    fig = go.Figure(data=go.Heatmap(
-        z=corr_matrix.values,
-        x=corr_matrix.columns,
-        y=corr_matrix.columns,
-        colorscale='RdBu',
-        zmid=0,
-        text=corr_matrix.values.round(2),
-        texttemplate='%{text}',
-        textfont={"size": 8},
-        colorbar=dict(title="Correlation")
-    ))
-    
-    fig.update_layout(
-        title=f'Correlation Heatmap - Top {top_n} Sensors',
-        template='plotly_white',
-        height=600,
-        width=700
-    )
-    
-    return fig
-
-
-def plot_cv_results(cv_results: dict, 
-                   param_name: str) -> go.Figure:
-    """
-    Plot cross-validation results
-    
-    Args:
-        cv_results: GridSearchCV cv_results_ dictionary
-        param_name: Parameter name to plot
-    
-    Returns:
-        Plotly figure object
-    """
-    results_df = pd.DataFrame.from_dict(cv_results)
-    results_df = results_df.sort_values([param_name])
-    
-    train_scores = results_df['mean_train_score']
-    cv_scores = results_df['mean_test_score']
-    params = results_df[param_name]
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=params,
-        y=train_scores,
-        mode='lines+markers',
-        name='Train F1',
-        line=dict(color='#1f77b4', width=2),
-        marker=dict(size=8)
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=params,
-        y=cv_scores,
-        mode='lines+markers',
-        name='CV F1',
-        line=dict(color='#ff7f0e', width=2),
-        marker=dict(size=8)
-    ))
-    
-    fig.update_layout(
-        title='Macro F1-Score vs Hyperparameter',
-        xaxis_title='Hyperparameter Value',
-        yaxis_title='Macro F1-Score',
-        xaxis_type='log',
-        template='plotly_white',
-        height=400,
-        hovermode='x unified'
     )
     
     return fig
@@ -337,15 +247,23 @@ def plot_feature_importance(importance_df: pd.DataFrame,
     Returns:
         Plotly figure object
     """
-    top_features = importance_df.head(top_n).sort_values('Importance')
+    # Ensure we have the right columns
+    if 'Importance' in importance_df.columns:
+        importance_col = 'Importance'
+    elif 'SHAP_Importance' in importance_df.columns:
+        importance_col = 'SHAP_Importance'
+    else:
+        importance_col = importance_df.columns[1]
+    
+    top_features = importance_df.head(top_n).sort_values(importance_col)
     
     fig = go.Figure(data=[
         go.Bar(
             y=top_features['Feature'],
-            x=top_features['Importance'],
+            x=top_features[importance_col],
             orientation='h',
             marker_color='#1f77b4',
-            text=top_features['Importance'].round(4),
+            text=top_features[importance_col].round(4),
             textposition='outside'
         )
     ])
@@ -374,19 +292,29 @@ def plot_model_comparison(models_df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
     
     fig.add_trace(go.Bar(
-        name='Macro F1 Score',
+        name='Accuracy',
         x=models_df['Model'],
-        y=models_df['Macro F1 Score'],
-        text=models_df['Macro F1 Score'].round(4),
+        y=models_df['Accuracy'],
+        text=models_df['Accuracy'].round(4),
         textposition='outside',
         marker_color='#2ca02c'
+    ))
+    
+    fig.add_trace(go.Bar(
+        name='F1 Macro',
+        x=models_df['Model'],
+        y=models_df['F1 Macro'],
+        text=models_df['F1 Macro'].round(4),
+        textposition='outside',
+        marker_color='#1f77b4'
     ))
     
     fig.update_layout(
         title='Model Performance Comparison',
         xaxis_title='Model',
-        yaxis_title='Macro F1 Score',
-        yaxis_range=[0.94, 1.0],
+        yaxis_title='Score',
+        yaxis_range=[0.95, 1.0],
+        barmode='group',
         template='plotly_white',
         height=400
     )
@@ -492,28 +420,3 @@ def plot_sensor_time_series(df: pd.DataFrame,
     )
     
     return fig
-
-
-def create_metric_cards_html(metrics: dict) -> str:
-    """
-    Generate HTML for metric cards
-    
-    Args:
-        metrics: Dictionary of metric names and values
-    
-    Returns:
-        HTML string
-    """
-    cards_html = ""
-    
-    for metric_name, metric_value in metrics.items():
-        cards_html += f"""
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    padding: 1.5rem; border-radius: 10px; color: white;
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin: 0.5rem;">
-            <h3 style="margin: 0; font-size: 2rem; font-weight: 700;">{metric_value}</h3>
-            <p style="margin: 0.5rem 0 0 0; font-size: 0.9rem; opacity: 0.9;">{metric_name}</p>
-        </div>
-        """
-    
-    return cards_html
