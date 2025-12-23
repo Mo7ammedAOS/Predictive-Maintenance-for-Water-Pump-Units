@@ -2,7 +2,6 @@
 Visualization Utilities for Predictive Maintenance Dashboard
 Provides interactive and static plotting functions
 """
-
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
