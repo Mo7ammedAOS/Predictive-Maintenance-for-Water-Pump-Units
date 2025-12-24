@@ -19,9 +19,9 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
-# data/
+
 data_source/
-/*.csv
+
 # Large data files (uncomment if needed)
 # data/*.csv
 # *.h5
