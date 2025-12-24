@@ -331,7 +331,7 @@ if current_status == 0:
 
 ---
 
-App Demo : [Water Pump Units PDM Dashboard]()
+App Demo : [Water Pump Units PDM Dashboard](https://predictive-maintenance-for-water-pump-units.streamlit.app/)
 
 
 ---
