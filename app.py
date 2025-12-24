@@ -166,9 +166,9 @@ if page == "🏠 Home":
          ↓
     Train/Test Split (Time-based)
          ↓
-    Model Training (4 algorithms with Grid Search)
+    Model Training 
          ↓
-    Evaluation & Selection (Best = Lowest False Negatives)
+    Evaluation 
          ↓
     Predictions & Recommendations
     ```
@@ -190,7 +190,7 @@ if page == "🏠 Home":
     
     with col1:
         st.markdown("### Step 3: Train Models")
-        st.markdown("Train 4 ML models with automatic hyperparameter tuning")
+        st.markdown("Train ML modes with automatic hyperparameter tuning")
     
     with col2:
         st.markdown("### Step 4: Make Predictions")
@@ -271,10 +271,8 @@ elif page == "⚙️ Data Preparation":
     
     with col1:
         uploaded_file = st.file_uploader("Upload CSV (or use demo)", type=['csv'], key="prep")
-    with col2:
-        use_demo = st.button("Demo Data", key="demo_prep")
     
-    if use_demo or uploaded_file:
+    if uploaded_file:
         st.markdown("### 📋 Pipeline Configuration")
         
         col1, col2 = st.columns(2)
@@ -293,7 +291,7 @@ elif page == "⚙️ Data Preparation":
             with st.spinner("⏳ Running complete data pipeline..."):
                 try:
                     pipeline_data = prepare_complete_pipeline(
-                        uploaded_file=uploaded_file if not use_demo else None,
+                        uploaded_file=uploaded_file if uploaded_file  else None,
                         file_path=None,
                         feature_type=feature_type
                     )
