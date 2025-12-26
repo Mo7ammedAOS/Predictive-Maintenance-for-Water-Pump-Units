@@ -326,7 +326,7 @@ def generate_sample_data(n_samples: int = 1000) -> pd.DataFrame:
     
     # Introduce some missing values realistically
     for col in df.columns[:10]:
-        missing_idx = np.random.choice(
+        missing_idx =np.random.choice(
             df.index, 
             size=int(len(df) * 0.02), 
             replace=False
@@ -341,14 +341,6 @@ def prepare_complete_pipeline(uploaded_file=None,
                              feature_type: str = 'deviation') -> Dict:
     """
     Complete data preparation pipeline from raw data to normalized features
-    
-    Args:
-        uploaded_file: Streamlit uploaded file
-        file_path: Path to CSV file
-        feature_type: 'deviation' or 'window' for feature engineering
-    
-    Returns:
-        Dictionary containing all pipeline outputs and metadata
     """
     # Load data
     if uploaded_file is not None or file_path is not None:
@@ -369,14 +361,26 @@ def prepare_complete_pipeline(uploaded_file=None,
     # Shift labels for 10-minute advance warning
     df_shifted = shift_labels(df_labels, sensor_cols)
     
+    # CHECK: Ensure we have data after shifting
+    if len(df_shifted) == 0:
+        raise ValueError("No data remaining after label shifting. Your dataset may be too small (need >10 rows)")
+    
     # Generate features based on type
     if feature_type == 'deviation':
         df_features = generate_deviation_features(df_shifted, sensor_cols)
     else:  # window
         df_features = generate_window_features(df_shifted, sensor_cols, window_size=10)
     
+    # CHECK: Ensure features were created
+    if len(df_features) == 0:
+        raise ValueError("No features generated. Check your data quality.")
+    
     # Split train/test
     X_train, X_test, y_train, y_test = split_train_test(df_features)
+    
+    # CHECK: Ensure train/test splits have data
+    if len(X_train) == 0 or len(X_test) == 0:
+        raise ValueError("Train or test set is empty. Increase dataset size.")
     
     # Normalize
     X_train_norm, X_test_norm, scaler = normalize_features(X_train, X_test)
