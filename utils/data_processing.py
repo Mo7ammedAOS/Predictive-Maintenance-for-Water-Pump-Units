@@ -194,7 +194,7 @@ def normalize_features(X_train: pd.DataFrame,
 
 
 def split_train_test(df: pd.DataFrame, 
-                     train_size: int = 131000) -> Tuple:
+                     train_size: int = 50000) -> Tuple:
     """
     Split data into train and test sets using time-based split
     
