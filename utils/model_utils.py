@@ -1,6 +1,7 @@
 """
 Model Training and Evaluation Utilities
 Handles ML model training with Random Forest only
+FIXED VERSION - Corrects probability array indexing bug
 """
 
 import numpy as np
@@ -29,7 +30,17 @@ class ModelTrainer:
     def train_random_forest(self, 
                            X_train: pd.DataFrame, 
                            y_train: pd.Series) -> Dict:
-        """Train Random Forest model with optimized parameters"""
+        """
+        Train Random Forest model with optimized parameters
+        
+        FIXED VERSION: Validates training data before fitting
+        """
+        # Validate input data
+        if len(X_train) == 0:
+            raise ValueError("Training data is empty")
+        
+        if len(y_train.unique()) < 2:
+            raise ValueError(f"Training data must have at least 2 classes. Found: {y_train.unique()}")
         
         # Use exact parameters from notebook
         self.model = RandomForestClassifier(
@@ -52,28 +63,52 @@ class ModelTrainer:
     def evaluate_model(self, 
                       X_test: pd.DataFrame, 
                       y_test: pd.Series) -> Dict:
-        """Evaluate Random Forest model on test data"""
+        """
+        Evaluate Random Forest model on test data
+        
+        FIXED VERSION: Handles edge cases in probability arrays
+        """
         
         if self.model is None:
             raise ValueError("Model not trained yet")
         
+        # Validate test data
+        if len(X_test) == 0:
+            raise ValueError("Test data is empty")
+        
         y_pred = self.model.predict(X_test)
         
         # Calculate comprehensive metrics
-        f1_macro = f1_score(y_test, y_pred, average='macro')
-        f1_weighted = f1_score(y_test, y_pred, average='weighted')
+        f1_macro = f1_score(y_test, y_pred, average='macro', zero_division=0)
+        f1_weighted = f1_score(y_test, y_pred, average='weighted', zero_division=0)
         accuracy = accuracy_score(y_test, y_pred)
         cm = confusion_matrix(y_test, y_pred)
         
         # Get precision and recall for each class
-        precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_pred)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_test, y_pred, zero_division=0
+        )
         
-        # Count misclassifications for broken state (class 0)
+        # Count misclassifications
         misclassifications_total = (y_test != y_pred).sum()
-        broken_false_negatives = cm[0, 1]  # Broken predicted as Normal
-        broken_false_positives = cm[1, 0]  # Normal predicted as Broken
         
-        report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
+        # Handle confusion matrix dimensions safely
+        # cm shape can be (2,2) for binary or (1,1) if only one class predicted
+        if cm.shape == (2, 2):
+            broken_false_negatives = cm[0, 1]  # Broken predicted as Normal
+            broken_false_positives = cm[1, 0]  # Normal predicted as Broken
+        elif cm.shape == (1, 1):
+            # Only one class present
+            broken_false_negatives = 0
+            broken_false_positives = 0
+        else:
+            # Unexpected shape - initialize safely
+            broken_false_negatives = 0
+            broken_false_positives = 0
+        
+        report = classification_report(
+            y_test, y_pred, output_dict=True, zero_division=0
+        )
         
         self.results = {
             'f1_macro': f1_macro,
@@ -139,6 +174,8 @@ def predict_with_confidence(model: Any,
     """
     Make predictions with confidence scores
     
+    FIXED VERSION: Handles probability array shapes safely
+    
     Args:
         model: Trained Random Forest model
         X: Features
@@ -156,10 +193,20 @@ def predict_with_confidence(model: Any,
     try:
         predictions = model.predict(X)
         probabilities = model.predict_proba(X)
+        
+        # CRITICAL FIX: Handle different probability array shapes
+        # For binary classification, proba shape should be (n_samples, 2)
+        # But if model only saw one class, it might be (n_samples, 1)
+        
+        if probabilities.shape[1] == 1:
+            # Only one class - create dummy second column
+            dummy_probs = 1 - probabilities
+            probabilities = np.hstack([probabilities, dummy_probs])
+        
+        return predictions, probabilities
+        
     except Exception as e:
         raise ValueError(f"Error during prediction: {str(e)}")
-    
-    return predictions, probabilities
 
 
 def get_maintenance_recommendation(probability: float,
@@ -169,13 +216,17 @@ def get_maintenance_recommendation(probability: float,
     Generate maintenance recommendation based on failure probability
     
     Args:
-        probability: Predicted failure probability
+        probability: Predicted failure probability (class 0 = BROKEN)
         threshold_low: Low risk threshold
         threshold_high: High risk threshold
     
     Returns:
         Dictionary with recommendation details
     """
+    
+    # Ensure probability is a scalar (not array)
+    if isinstance(probability, (np.ndarray, pd.Series)):
+        probability = float(probability.flat[0])
     
     if probability < threshold_low:
         return {
