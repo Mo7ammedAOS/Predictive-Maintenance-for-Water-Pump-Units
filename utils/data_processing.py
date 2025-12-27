@@ -1,6 +1,7 @@
 """
 Data Processing Utilities for Predictive Maintenance
 Handles complete data pipeline from loading to feature engineering
+FIXED VERSION - Corrects train/test split empty dataset bug
 """
 
 import pandas as pd
@@ -94,19 +95,28 @@ def shift_labels(df: pd.DataFrame,
                  sensor_cols: List[str], 
                  shift_steps: int = 10) -> pd.DataFrame:
     """
-    Shift labels forward for predictive modeling (10-minute advance warning)
+    Shift labels forward by 10 minutes for predictive modeling
+    
+    FIXED VERSION: Properly handles sensor columns and labels
     
     Args:
         df: DataFrame with sensor data and labels
-        sensor_cols: List of sensor column names (excluding 'labels')
+        sensor_cols: List of sensor column names (should NOT include 'labels')
         shift_steps: Number of time steps to shift (default: 10 minutes)
     
     Returns:
-        DataFrame with shifted labels
+        DataFrame with shifted labels and sensor data
     """
+    # Create new dataframe with only sensor columns
     new_df = df[sensor_cols].copy()
+    
+    # Add shifted labels (shift forward = negative shift to predict future)
     new_df['labels'] = df['labels'].shift(-shift_steps)
-    return new_df.dropna()
+    
+    # Drop rows with NaN (last 'shift_steps' rows will have NaN labels)
+    new_df = new_df.dropna()
+    
+    return new_df
 
 
 def generate_deviation_features(df: pd.DataFrame, 
@@ -198,6 +208,8 @@ def split_train_test(df: pd.DataFrame,
     """
     Split data into train and test sets using time-based split
     
+    FIXED VERSION: Handles small datasets gracefully
+    
     Args:
         df: DataFrame with features and labels
         train_size: Number of samples for training
@@ -205,6 +217,20 @@ def split_train_test(df: pd.DataFrame,
     Returns:
         Tuple of (X_train, X_test, y_train, y_test)
     """
+    # Ensure train_size doesn't exceed dataset size
+    total_samples = len(df)
+    
+    if total_samples < 100:
+        raise ValueError(f"Dataset too small ({total_samples} samples). Need at least 100 samples.")
+    
+    # Adjust train_size if needed (use 80% for training if specified size is too large)
+    if train_size >= total_samples:
+        train_size = int(total_samples * 0.8)
+    
+    # Ensure we have at least some test data
+    if total_samples - train_size < 10:
+        train_size = total_samples - max(10, int(total_samples * 0.2))
+    
     y = df['labels']
     X = df.drop(columns=['labels'])
     
@@ -309,7 +335,9 @@ def generate_sample_data(n_samples: int = 1000) -> pd.DataFrame:
     data = {}
     
     # Generate 58 sensor readings (after removing sensor_15)
-    for i in range(58):
+    for i in range(59):
+        if i == 15:
+            continue  # Skip sensor_15
         sensor_name = f'sensor_{i:02d}'
         # Normal readings: mean around 0.5, std 0.1
         data[sensor_name] = np.random.normal(0.5, 0.1, n_samples)
@@ -326,7 +354,7 @@ def generate_sample_data(n_samples: int = 1000) -> pd.DataFrame:
     
     # Introduce some missing values realistically
     for col in df.columns[:10]:
-        missing_idx =np.random.choice(
+        missing_idx = np.random.choice(
             df.index, 
             size=int(len(df) * 0.02), 
             replace=False
@@ -341,31 +369,36 @@ def prepare_complete_pipeline(uploaded_file=None,
                              feature_type: str = 'deviation') -> Dict:
     """
     Complete data preparation pipeline from raw data to normalized features
+    
+    FIXED VERSION: Properly handles the entire pipeline sequence
     """
-    # Load data
+    # Step 1: Load data
     if uploaded_file is not None or file_path is not None:
         df_raw = load_sensor_data(file_path=file_path, uploaded_file=uploaded_file)
     else:
         df_raw = generate_sample_data(n_samples=5000)
     
-    # Preprocess
+    # Step 2: Preprocess (drop sensor_15, fill missing values)
     df_clean = preprocess_data(df_raw)
     
-    # Create labels
+    # Step 3: Create labels (1=NORMAL, 0=BROKEN)
     df_labels = create_labels(df_clean)
     
-    # Get sensor columns
+    # Step 4: Get sensor columns (EXCLUDING labels and machine_status)
     sensor_cols = [col for col in df_labels.columns 
                    if col.startswith('sensor_')]
     
-    # Shift labels for 10-minute advance warning
-    df_shifted = shift_labels(df_labels, sensor_cols)
+    # CRITICAL FIX: sensor_cols should NOT include 'labels'
+    # The shift_labels function will add labels separately
+    
+    # Step 5: Shift labels for 10-minute advance warning
+    df_shifted = shift_labels(df_labels, sensor_cols, shift_steps=10)
     
     # CHECK: Ensure we have data after shifting
     if len(df_shifted) == 0:
         raise ValueError("No data remaining after label shifting. Your dataset may be too small (need >10 rows)")
     
-    # Generate features based on type
+    # Step 6: Generate features based on type
     if feature_type == 'deviation':
         df_features = generate_deviation_features(df_shifted, sensor_cols)
     else:  # window
@@ -375,17 +408,18 @@ def prepare_complete_pipeline(uploaded_file=None,
     if len(df_features) == 0:
         raise ValueError("No features generated. Check your data quality.")
     
-    # Split train/test
-    X_train, X_test, y_train, y_test = split_train_test(df_features)
+    # Step 7: Split train/test (use adaptive split size)
+    train_size = min(50000, int(len(df_features) * 0.8))
+    X_train, X_test, y_train, y_test = split_train_test(df_features, train_size=train_size)
     
     # CHECK: Ensure train/test splits have data
     if len(X_train) == 0 or len(X_test) == 0:
-        raise ValueError("Train or test set is empty. Increase dataset size.")
+        raise ValueError(f"Train or test set is empty. Dataset size: {len(df_features)}, Train size: {len(X_train)}, Test size: {len(X_test)}")
     
-    # Normalize
+    # Step 8: Normalize features
     X_train_norm, X_test_norm, scaler = normalize_features(X_train, X_test)
     
-    # Get statistics
+    # Step 9: Get statistics
     class_dist_train = get_class_distribution(y_train)
     class_dist_test = get_class_distribution(y_test)
     
