@@ -1,957 +1,901 @@
-# LIVE PREDICTIONS PAGE (copied above but updating section marker)
-"""
-Predictive Maintenance Dashboard - Complete Pipeline
-A portfolio project demonstrating ML engineering skills in predictive analytics
-Refactored to match original notebook workflow exactly
-"""
-
 import streamlit as st
-from pathlib import Path
 import pandas as pd
 import numpy as np
-import sys
-import time
-
-# Add utils to path
-sys.path.insert(0, str(Path(__file__).parent))
-
-# Import utility modules
-from utils.data_processing import (
-    load_sensor_data, preprocess_data, create_labels, 
-    normalize_features, split_train_test, generate_sample_data,
-    get_class_distribution, get_missing_value_stats, calculate_statistics,
-    shift_labels, generate_deviation_features, generate_window_features,
-    prepare_complete_pipeline
-)
-from utils.model_utils import (
-    ModelTrainer, predict_with_confidence,
-    get_maintenance_recommendation, calculate_cost_savings
-)
-from utils.visualizations import (
-    plot_machine_status_timeline, plot_class_distribution,
-    plot_missing_values, plot_sensor_distribution,
-    plot_confusion_matrix, plot_feature_importance,
-    plot_model_comparison, plot_probability_gauge,
-    plot_sensor_time_series, plot_correlation_heatmap
-)
+import matplotlib.pyplot as plt
+import seaborn as sns
+import joblib
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, confusion_matrix
+import warnings
+warnings.filterwarnings("ignore")
 
 # Page configuration
 st.set_page_config(
-    page_title="Predictive Maintenance Dashboard",
-    page_icon="⚙️",
+    page_title="Water Pump Predictive Maintenance",
+    page_icon="💧",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # Custom CSS
-def load_css():
-    st.markdown("""
-        <style>
-        .main-header {
-            font-size: 3rem;
-            font-weight: 700;
-            color: #1f77b4;
-            text-align: center;
-            margin-bottom: 1rem;
-        }
+st.markdown("""
+    <style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .stMetric {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        color: white;
+    }
+    .stMetric label {
+        color: white !important;
+    }
+    .stMetric [data-testid="stMetricValue"] {
+        color: white !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Helper Functions
+@st.cache_data
+def load_data(file):
+    """Load and cache uploaded data"""
+    df = pd.read_csv(file)
+    if 'Unnamed: 0' in df.columns:
+        df.drop(columns=['Unnamed: 0'], inplace=True)
+    return df
+
+@st.cache_resource
+def load_model():
+    """Load trained model and preprocessing components"""
+    try:
+        model_package = joblib.load('./models/water_pump_model.pkl')
+        return model_package
+    except FileNotFoundError:
+        st.error("⚠️ Model file not found. Please ensure 'water_pump_model.pkl' is in the app directory.")
+        return None
+
+def preprocess_data(df):
+    """Preprocess raw sensor data"""
+    df = df.copy()
+    
+    if 'machine_status' in df.columns:
+        df['labels'] = df['machine_status'].map(lambda x: 1 if x == 'NORMAL' else 0)
+    
+    sensor_cols = [col for col in df.columns if col.startswith('sensor_') and col != 'sensor_15']
+    for col in sensor_cols:
+        if col in df.columns:
+            df[col].fillna(-1, inplace=True)
+    
+    if 'sensor_15' in df.columns:
+        df.drop(columns=['sensor_15'], inplace=True)
+    
+    return df
+
+def engineer_features(df, model_package):
+    """Create features matching the model's expected format"""
+    feature_type = model_package.get('feature_type', 'deviation')
+    
+    if feature_type == 'deviation' and model_package.get('normal_means'):
+        features = {}
+        sensor_cols = [col for col in df.columns if col.startswith('sensor_') and col != 'sensor_15']
         
-        .metric-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 1.5rem;
-            border-radius: 10px;
-            color: white;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
+        for sensor in sensor_cols:
+            if sensor in df.columns:
+                if sensor in model_package['normal_means']:
+                    features[f'{sensor}_deviation'] = df[sensor] - model_package['normal_means'][sensor]
+                else:
+                    features[f'{sensor}_deviation'] = df[sensor]
         
-        .info-box {
-            background-color: #f0f8ff;
-            border-left: 4px solid #1f77b4;
-            padding: 1rem;
-            border-radius: 5px;
-        }
+        return pd.DataFrame(features, index=df.index)
+    else:
+        sensor_cols = [col for col in df.columns if col.startswith('sensor_') and col != 'sensor_15']
+        return df[sensor_cols].copy()
+
+def calculate_metrics(y_true, y_pred):
+    """Calculate all performance metrics"""
+    accuracy = accuracy_score(y_true, y_pred)
+    f1_macro = f1_score(y_true, y_pred, average='macro')
+    precision = precision_score(y_true, y_pred, average='macro')
+    recall = recall_score(y_true, y_pred, average='macro')
+    
+    # Class-specific metrics
+    f1_class = f1_score(y_true, y_pred, average=None)
+    precision_class = precision_score(y_true, y_pred, average=None)
+    recall_class = recall_score(y_true, y_pred, average=None)
+    
+    cm = confusion_matrix(y_true, y_pred)
+    
+    return {
+        'accuracy': accuracy,
+        'f1_macro': f1_macro,
+        'precision': precision,
+        'recall': recall,
+        'f1_broken': f1_class[0] if len(f1_class) > 1 else 0,
+        'f1_normal': f1_class[1] if len(f1_class) > 1 else f1_class[0],
+        'precision_broken': precision_class[0] if len(precision_class) > 1 else 0,
+        'precision_normal': precision_class[1] if len(precision_class) > 1 else precision_class[0],
+        'recall_broken': recall_class[0] if len(recall_class) > 1 else 0,
+        'recall_normal': recall_class[1] if len(recall_class) > 1 else recall_class[0],
+        'confusion_matrix': cm,
+        'total_predictions': len(y_pred),
+        'correct_predictions': (y_true == y_pred).sum(),
+        'misclassifications': (y_true != y_pred).sum()
+    }
+
+def plot_status_timeline(df):
+    """Plot machine status over time"""
+    fig, ax = plt.subplots(figsize=(14, 4))
+    
+    y = df['labels'].values
+    x = df.index
+    
+    # Calculate statistics for display
+    normal_pct = (y == 1).sum() / len(y) * 100
+    broken_pct = (y == 0).sum() / len(y) * 100
+    
+    ax.plot(x, y, linewidth=1.5, color='#1f77b4', alpha=0.8)
+    ax.fill_between(x, y, alpha=0.3, color='#1f77b4')
+    ax.set_xlabel('Time Step', fontsize=11)
+    ax.set_ylabel('Status', fontsize=11)
+    ax.set_title(f'Machine Status Timeline - Normal: {normal_pct:.1f}% | Broken: {broken_pct:.1f}%', 
+                 fontsize=12, fontweight='bold')
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(['BROKEN', 'NORMAL'])
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    return fig, {'normal_pct': normal_pct, 'broken_pct': broken_pct}
+
+def plot_sensor_distribution(df, sensor):
+    """Plot sensor value distributions"""
+    fig, ax = plt.subplots(figsize=(10, 4))
+    
+    normal = df[df['labels'] == 1][sensor].dropna()
+    broken = df[df['labels'] == 0][sensor].dropna()
+    
+    if len(normal) > 0:
+        sns.kdeplot(normal, label=f"Normal (n={len(normal)})", fill=True, color='#2ecc71', ax=ax)
+    if len(broken) > 0:
+        sns.kdeplot(broken, label=f"Broken (n={len(broken)})", fill=True, color='#e74c3c', ax=ax)
+    
+    # Calculate separation metric
+    if len(normal) > 0 and len(broken) > 0:
+        mean_diff = abs(normal.mean() - broken.mean())
+        std_pooled = np.sqrt((normal.std()**2 + broken.std()**2) / 2)
+        separation = mean_diff / std_pooled if std_pooled > 0 else 0
         
-        .success-box {
-            background-color: #f0fff4;
-            border-left: 4px solid #2ca02c;
-            padding: 1rem;
-            border-radius: 5px;
-        }
+        ax.set_title(f'{sensor} - Separation Score: {separation:.2f}', 
+                    fontsize=11, fontweight='bold')
+    else:
+        ax.set_title(f'{sensor} Distribution', fontsize=11, fontweight='bold')
+    
+    ax.set_xlabel(f'{sensor} readings', fontsize=10)
+    ax.legend()
+    ax.grid(True, alpha=0.2)
+    plt.tight_layout()
+    
+    return fig
+
+def plot_confusion_matrix(cm, metrics):
+    """Plot confusion matrix with metrics"""
+    fig, ax = plt.subplots(figsize=(7, 6))
+    
+    # Calculate percentages
+    cm_pct = cm.astype('float') / cm.sum() * 100
+    
+    # Annotations with counts and percentages
+    annot = np.array([[f'{cm[i,j]}\n({cm_pct[i,j]:.1f}%)' 
+                      for j in range(cm.shape[1])] 
+                      for i in range(cm.shape[0])])
+    
+    sns.heatmap(cm, annot=annot, fmt='', cmap='Blues', 
+                xticklabels=['Broken', 'Normal'],
+                yticklabels=['Broken', 'Normal'],
+                cbar_kws={'label': 'Count'}, ax=ax)
+    
+    ax.set_xlabel('Predicted', fontsize=11)
+    ax.set_ylabel('Actual', fontsize=11)
+    
+    # Add accuracy in title
+    accuracy = metrics['accuracy'] * 100
+    ax.set_title(f'Confusion Matrix - Accuracy: {accuracy:.2f}%', 
+                fontsize=12, fontweight='bold')
+    
+    plt.tight_layout()
+    return fig
+
+def analyze_sensor_importance(df, feature_importance_df):
+    """Analyze sensor importance with statistics"""
+    sensor_stats = []
+    
+    for idx, row in feature_importance_df.head(10).iterrows():
+        sensor = row['Feature'].replace('_deviation', '')
         
-        .section-divider {
-            border-top: 2px solid #e0e0e0;
-            margin: 2rem 0;
-        }
-        </style>
-    """, unsafe_allow_html=True)
+        if sensor in df.columns:
+            normal_vals = df[df['labels'] == 1][sensor].dropna()
+            broken_vals = df[df['labels'] == 0][sensor].dropna()
+            
+            stats = {
+                'sensor': row['Feature'],
+                'importance': row['Importance'],
+                'normal_mean': normal_vals.mean() if len(normal_vals) > 0 else 0,
+                'broken_mean': broken_vals.mean() if len(broken_vals) > 0 else 0,
+                'normal_std': normal_vals.std() if len(normal_vals) > 0 else 0,
+                'broken_std': broken_vals.std() if len(broken_vals) > 0 else 0,
+                'missing_rate': df[sensor].isna().sum() / len(df) * 100
+            }
+            
+            stats['mean_diff'] = abs(stats['normal_mean'] - stats['broken_mean'])
+            sensor_stats.append(stats)
+    
+    return pd.DataFrame(sensor_stats)
 
-load_css()
-
-# Sidebar navigation
-st.sidebar.title("🎯 Predictive Maintenance Dashboard")
-st.sidebar.markdown("---")
-
-page = st.sidebar.radio(
-    "Navigation",
-    [
-        "🏠 Home",
-        "📊 Data Exploration", 
-        "⚙️ Data Preparation",
-        "🤖 Model Training",
-        "🔮 Live Predictions",
-        "💡 Feature Insights",
-        "📄 About"
-    ]
-)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 📖 Resources")
-st.sidebar.markdown("- [📂 GitHub](https://github.com/Mo7ammedAOS/Predictive-Maintenance-for-Water-Pump-Units.git)")
-st.sidebar.markdown("- [📧 Contact](mailto:mohammedossidahmed@gmail.com)")
-st.sidebar.markdown("- [💼 LinkedIn](https://www.linkedin.com/in/mohammed-abelmoneim-5415991b6/)")
-
-# Initialize session state
-if 'pipeline_data' not in st.session_state:
-    st.session_state.pipeline_data = None
-
-if 'trainer' not in st.session_state:
-    st.session_state.trainer = None
-
-# HOME PAGE
-if page == "🏠 Home":
-    st.markdown('<h1 class="main-header">⚙️ Predictive Maintenance System For Water Pump Units</h1>', 
+# Main Application
+def main():
+    st.markdown('<h1 class="main-header">💧 Water Pump Predictive Maintenance</h1>', 
                 unsafe_allow_html=True)
-    st.markdown('<p style="text-align:center; font-size:1.2rem; color:#666;">Preventing Machine Failures Through Advanced Machine Learning</p>', 
-                unsafe_allow_html=True)
     
-    # Dynamic metrics based on pipeline data if available
-    if st.session_state.pipeline_data:
-        pipeline_data = st.session_state.pipeline_data
-        sensor_count = len(pipeline_data['sensor_cols'])
-        total_samples = pipeline_data['stats']['total_samples']
-        feature_type = pipeline_data['feature_type'].upper()
+    # Load model
+    model_package = load_model()
+    if model_package is None:
+        st.error("Cannot proceed without model file.")
+        return
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("🎛️ Control Panel")
         
+        uploaded_file = st.file_uploader("📁 Upload Sensor Data", type=['csv'])
+        
+        if uploaded_file:
+            st.success("✅ File loaded")
+        
+        st.markdown("---")
+        
+        page = st.radio("📍 Navigation", 
+                       ["📊 Overview", 
+                        "🔍 Sensor Analysis",
+                        "🤖 Predictions",
+                        "📈 Performance"])
+        
+        st.markdown("---")
+        
+        # Model info - DYNAMIC
+        st.markdown("### 🤖 Model Info")
+        model = model_package.get('model')
+        if model:
+            st.metric("Trees", f"{model.n_estimators}")
+            st.metric("Max Depth", f"{model.max_depth}")
+            st.metric("Features", f"{model.n_features_in_}")
     
-    st.markdown("<br>", unsafe_allow_html=True)
+    # Main content
+    if uploaded_file is not None:
+        # Load and process data
+        df = load_data(uploaded_file)
+        df_processed = preprocess_data(df.copy())
+        
+        # Store in session state
+        if 'df_processed' not in st.session_state:
+            st.session_state.df_processed = df_processed
+        
+        # Route to pages
+        if page == "📊 Overview":
+            show_overview(df_processed)
+        elif page == "🔍 Sensor Analysis":
+            show_sensor_analysis(df_processed)
+        elif page == "🤖 Predictions":
+            show_predictions(df_processed, model_package)
+        elif page == "📈 Performance":
+            show_performance(model_package)
+    else:
+        st.info("👆 Upload a CSV file to begin")
+        st.markdown("""
+        ### 📋 Required Format
+        - `timestamp`: Date/time column
+        - `sensor_00` to `sensor_51`: Sensor readings
+        - `machine_status`: Status (NORMAL, BROKEN, RECOVERING)
+        """)
+
+def show_overview(df):
+    """Overview page with key metrics"""
+    st.header("📊 Data Overview")
     
-    st.markdown("## 🎯 Project Overview")
+    # Calculate dynamic statistics
+    total_records = len(df)
+    sensor_cols = [col for col in df.columns if col.startswith('sensor_') and col != 'sensor_15']
+    n_sensors = len(sensor_cols)
     
-    st.markdown("""
-    <div class="info-box">
-        <h3>The Challenge</h3>
-        <p>Industrial machinery failures cost companies millions in unexpected downtime, emergency repairs, 
-        and lost productivity. Traditional reactive maintenance is expensive and disruptive.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # Class distribution
+    normal_count = (df['labels'] == 1).sum()
+    broken_count = (df['labels'] == 0).sum()
+    normal_pct = normal_count / total_records * 100
+    broken_pct = broken_count / total_records * 100
     
-    st.markdown("""
-    <div class="success-box">
-        <h3>The Solution</h3>
-        <p>A machine learning system that predicts equipment failures 10 minutes in advance using 
-        real-time sensor data, enabling proactive maintenance scheduling and preventing costly breakdowns.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # Time range
+    if 'timestamp' in df.columns:
+        time_range = pd.to_datetime(df['timestamp'])
+        duration_days = (time_range.max() - time_range.min()).days
+    else:
+        duration_days = "N/A"
     
-    st.markdown("## 📈 ML Pipeline")
-    st.markdown("""
-    ```
-    Raw Sensor Data
-         ↓
-    Data Cleaning & Preprocessing
-         ↓
-    Label Creation & Shifting (10-min advance)
-         ↓
-    Feature Engineering (Deviation/Window)
-         ↓
-    Data Normalization (MinMax Scaling)
-         ↓
-    Train/Test Split (Time-based)
-         ↓
-    Model Training 
-         ↓
-    Evaluation 
-         ↓
-    Predictions & Recommendations
-    ```
-    """)
+    # Missing values
+    missing_total = df[sensor_cols].isna().sum().sum()
+    missing_pct = missing_total / (len(df) * n_sensors) * 100
     
-    st.markdown("## 💼 How to Use")
+    # Display metrics
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric("📝 Total Records", f"{total_records:,}")
+    with col2:
+        st.metric("🔌 Sensors", f"{n_sensors}")
+    with col3:
+        st.metric("✅ Normal", f"{normal_count:,}", 
+                 delta=f"{normal_pct:.1f}%")
+    with col4:
+        st.metric("❌ Broken", f"{broken_count:,}", 
+                 delta=f"{broken_pct:.1f}%", delta_color="inverse")
+    with col5:
+        st.metric("⏱️ Duration", f"{duration_days} days" if duration_days != "N/A" else "N/A")
+    
+    st.markdown("---")
+    
+    # Timeline
+    st.subheader("⏱️ Status Timeline")
+    fig, stats = plot_status_timeline(df)
+    st.pyplot(fig)
+    
+    # Imbalance warning
+    imbalance_ratio = max(normal_pct, broken_pct) / min(normal_pct, broken_pct)
+    if imbalance_ratio > 3:
+        st.warning(f"⚠️ Class imbalance detected: {imbalance_ratio:.1f}:1 ratio")
+    
+    st.markdown("---")
+    
+    # Missing values analysis
+    st.subheader("❓ Data Quality")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### Step 1: Explore Data")
-        st.markdown("Upload your sensor CSV and explore the data distribution")
+        st.metric("Missing Values", f"{missing_total:,}", 
+                 delta=f"{missing_pct:.2f}%", delta_color="inverse")
+        
+        # Top sensors with missing values
+        missing_by_sensor = df[sensor_cols].isna().sum().sort_values(ascending=False).head(5)
+        if missing_by_sensor.sum() > 0:
+            st.write("**Top 5 Sensors with Missing Values:**")
+            for sensor, count in missing_by_sensor.items():
+                pct = count / len(df) * 100
+                st.write(f"- `{sensor}`: {count:,} ({pct:.1f}%)")
     
     with col2:
-        st.markdown("### Step 2: Prepare Pipeline")
-        st.markdown("Run complete data preprocessing and feature engineering")
+        # Sensor value ranges
+        st.write("**Sensor Value Ranges:**")
+        sample_sensors = sensor_cols[:5]
+        for sensor in sample_sensors:
+            min_val = df[sensor].min()
+            max_val = df[sensor].max()
+            mean_val = df[sensor].mean()
+            st.write(f"- `{sensor}`: [{min_val:.2f}, {max_val:.2f}] (μ={mean_val:.2f})")
+
+def show_sensor_analysis(df):
+    """Sensor analysis page"""
+    st.header("🔍 Sensor Analysis")
     
-    col1, col2 = st.columns(2)
+    sensor_cols = [col for col in df.columns if col.startswith('sensor_') and col != 'sensor_15']
+    
+    # Calculate separation scores for all sensors
+    st.subheader("📊 Sensor Effectiveness Ranking")
+    
+    with st.spinner("Calculating sensor separation scores..."):
+        sensor_scores = []
+        
+        for sensor in sensor_cols:
+            normal = df[df['labels'] == 1][sensor].dropna()
+            broken = df[df['labels'] == 0][sensor].dropna()
+            
+            if len(normal) > 0 and len(broken) > 0:
+                mean_diff = abs(normal.mean() - broken.mean())
+                std_pooled = np.sqrt((normal.std()**2 + broken.std()**2) / 2)
+                separation = mean_diff / std_pooled if std_pooled > 0 else 0
+                
+                sensor_scores.append({
+                    'Sensor': sensor,
+                    'Separation Score': separation,
+                    'Normal Mean': normal.mean(),
+                    'Broken Mean': broken.mean(),
+                    'Difference': mean_diff,
+                    'Missing %': df[sensor].isna().sum() / len(df) * 100
+                })
+        
+        scores_df = pd.DataFrame(sensor_scores).sort_values('Separation Score', ascending=False)
+    
+    # Display top sensors
+    col1, col2 = st.columns([2, 3])
     
     with col1:
-        st.markdown("### Step 3: Train Models")
-        st.markdown("Train ML modes with automatic hyperparameter tuning")
+        st.metric("Most Effective Sensor", 
+                 scores_df.iloc[0]['Sensor'], 
+                 delta=f"Score: {scores_df.iloc[0]['Separation Score']:.2f}")
+        
+        st.write("**Top 10 Sensors:**")
+        st.dataframe(scores_df.head(10).style.background_gradient(
+            subset=['Separation Score'], cmap='RdYlGn'
+        ), use_container_width=True)
     
     with col2:
-        st.markdown("### Step 4: Make Predictions")
-        st.markdown("Use the best model for real-time failure predictions")
-
-
-# DATA EXPLORATION PAGE
-elif page == "📊 Data Exploration":
-    st.title("📊 Data Exploration & Analysis")
-    st.markdown("Understand your sensor data and machine failure patterns")
+        # Plot separation scores
+        fig, ax = plt.subplots(figsize=(10, 6))
+        top_10 = scores_df.head(10)
+        colors = plt.cm.RdYlGn(np.linspace(0.3, 0.9, len(top_10)))
+        
+        bars = ax.barh(range(len(top_10)), top_10['Separation Score'], color=colors)
+        ax.set_yticks(range(len(top_10)))
+        ax.set_yticklabels(top_10['Sensor'])
+        ax.set_xlabel('Separation Score', fontsize=11)
+        ax.set_title('Top 10 Most Predictive Sensors', fontsize=12, fontweight='bold')
+        ax.invert_yaxis()
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        for i, bar in enumerate(bars):
+            width = bar.get_width()
+            ax.text(width, bar.get_y() + bar.get_height()/2, 
+                   f'{width:.2f}', ha='left', va='center', fontsize=9)
+        
+        plt.tight_layout()
+        st.pyplot(fig)
     
+    st.markdown("---")
+    
+    # Interactive sensor selection
+    st.subheader("🎯 Detailed Sensor View")
+    
+    n_sensors_to_show = st.slider("Number of sensors to analyze", 3, 15, 6)
+    
+    selected_sensors = st.multiselect(
+        "Or select specific sensors:",
+        options=sensor_cols,
+        default=list(scores_df.head(n_sensors_to_show)['Sensor'])
+    )
+    
+    if not selected_sensors:
+        selected_sensors = list(scores_df.head(n_sensors_to_show)['Sensor'])
+    
+    # Display distributions
+    cols_per_row = 2
+    for i in range(0, len(selected_sensors), cols_per_row):
+        cols = st.columns(cols_per_row)
+        for j, col in enumerate(cols):
+            if i + j < len(selected_sensors):
+                with col:
+                    sensor = selected_sensors[i + j]
+                    fig = plot_sensor_distribution(df, sensor)
+                    st.pyplot(fig)
+
+def show_predictions(df, model_package):
+    """Predictions page"""
+    st.header("🤖 Model Predictions")
+    
+    # Prediction controls
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        uploaded_file = st.file_uploader("Upload sensor CSV file", type=['csv'])
-    with col2:
-        use_demo = st.button("📂 Use Demo Data")
+        st.write("Click the button below to generate predictions for the uploaded data.")
     
-    if uploaded_file is not None or use_demo:
-        if use_demo:
-            df = generate_sample_data(n_samples=5000)
-            st.success("✅ Demo data loaded (5,000 samples, 58 sensors)")
-        else:
-            df = load_sensor_data(uploaded_file=uploaded_file)
-            st.success(f"✅ Loaded: {uploaded_file.name}")
+    with col2:
+        predict_button = st.button("🚀 Run Predictions", type="primary", use_container_width=True)
+    
+    if predict_button or 'predictions' in st.session_state:
+        with st.spinner("Generating predictions..."):
+            # Engineer features
+            features_df = engineer_features(df, model_package)
+            
+            # Align features
+            expected_features = model_package['feature_columns']
+            for feat in expected_features:
+                if feat not in features_df.columns:
+                    features_df[feat] = 0
+            features_df = features_df[expected_features]
+            
+            # Normalize
+            scaler = MinMaxScaler()
+            features_normalized = pd.DataFrame(
+                scaler.fit_transform(features_df),
+                columns=features_df.columns,
+                index=features_df.index
+            )
+            
+            # Predict
+            predictions = model_package['model'].predict(features_normalized)
+            probabilities = model_package['model'].predict_proba(features_normalized)
+            
+            # Store results
+            df['prediction'] = predictions
+            df['failure_probability'] = probabilities[:, 0]
+            st.session_state.predictions = df
         
-        # Display basic statistics
-        st.markdown("### 📈 Dataset Overview")
+        df = st.session_state.predictions
         
-        col1, col2, col3, col4 = st.columns(4)
+        # Calculate dynamic metrics
+        total_pred = len(predictions)
+        normal_pred = (predictions == 1).sum()
+        broken_pred = (predictions == 0).sum()
+        avg_risk = df['failure_probability'].mean()
+        max_risk = df['failure_probability'].max()
+        high_risk_count = (df['failure_probability'] > 0.5).sum()
+        
+        # Display metrics
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            st.metric("Total Rows", f"{len(df):,}")
+            st.metric("Total Predictions", f"{total_pred:,}")
         with col2:
-            st.metric("Total Columns", df.shape[1])
+            st.metric("Predicted Normal", f"{normal_pred:,}", 
+                     delta=f"{normal_pred/total_pred*100:.1f}%")
         with col3:
-            st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+            st.metric("Predicted Broken", f"{broken_pred:,}", 
+                     delta=f"{broken_pred/total_pred*100:.1f}%", delta_color="inverse")
         with col4:
-            st.metric("Missing Values", df.isna().sum().sum())
+            st.metric("Avg Failure Risk", f"{avg_risk*100:.1f}%")
+        with col5:
+            st.metric("High Risk Periods", f"{high_risk_count:,}", 
+                     delta=f"{high_risk_count/total_pred*100:.1f}%", delta_color="inverse")
         
-        # Show first few rows
-        st.markdown("### 🔍 Data Sample")
-        st.dataframe(df.head(10), use_container_width=True)
+        st.markdown("---")
         
-        # Machine status distribution
-        if 'machine_status' in df.columns:
-            st.markdown("### 🏭 Machine Status Distribution")
+        # Prediction timeline
+        st.subheader("📈 Prediction Timeline")
+        
+        fig, ax = plt.subplots(figsize=(14, 5))
+        
+        x = df.index
+        ax.plot(x, df['labels'], label='Actual', linewidth=2, color='#2ecc71', alpha=0.7)
+        ax.plot(x, df['prediction'], label='Predicted', linewidth=2, 
+               color='#e74c3c', linestyle='--', alpha=0.7)
+        
+        # Highlight misclassifications
+        misclass = df['labels'] != df['prediction']
+        if misclass.sum() > 0:
+            ax.scatter(x[misclass], df.loc[misclass, 'labels'], 
+                      color='orange', s=50, label=f'Misclassified ({misclass.sum()})', 
+                      zorder=5, alpha=0.6)
+        
+        ax.set_xlabel('Time Step', fontsize=11)
+        ax.set_ylabel('Status', fontsize=11)
+        ax.set_title(f'Actual vs Predicted - Agreement: {(~misclass).sum()/len(df)*100:.1f}%', 
+                    fontsize=12, fontweight='bold')
+        ax.set_yticks([0, 1])
+        ax.set_yticklabels(['BROKEN', 'NORMAL'])
+        ax.legend(loc='best', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        st.pyplot(fig)
+        
+        st.markdown("---")
+        
+        # Performance metrics
+        if 'labels' in df.columns:
+            st.subheader("📊 Performance Metrics")
             
-            status_counts = df['machine_status'].value_counts()
+            metrics = calculate_metrics(df['labels'], df['prediction'])
+            
+            # Overall metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Accuracy", f"{metrics['accuracy']*100:.2f}%")
+            with col2:
+                st.metric("F1 Score (Macro)", f"{metrics['f1_macro']*100:.2f}%")
+            with col3:
+                st.metric("Precision", f"{metrics['precision']*100:.2f}%")
+            with col4:
+                st.metric("Recall", f"{metrics['recall']*100:.2f}%")
+            
+            # Class-specific metrics
+            st.write("**Class-Specific Performance:**")
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                for status, count in status_counts.items():
-                    pct = (count / len(df)) * 100
-                    st.metric(f"{status}", f"{count:,}", f"{pct:.1f}%")
-        
-        # Missing values analysis
-        st.markdown("### 🔍 Missing Values Analysis")
-        missing_stats = get_missing_value_stats(df)
-        
-        if len(missing_stats) > 0:
-            st.dataframe(missing_stats, use_container_width=True)
-            st.warning(f"⚠️ {len(missing_stats)} sensors have missing values")
+                st.write("**BROKEN Class:**")
+                st.metric("F1 Score", f"{metrics['f1_broken']*100:.2f}%")
+                st.metric("Precision", f"{metrics['precision_broken']*100:.2f}%")
+                st.metric("Recall", f"{metrics['recall_broken']*100:.2f}%")
             
-            # Visualize missing values
-            fig = plot_missing_values(df)
-            st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                st.write("**NORMAL Class:**")
+                st.metric("F1 Score", f"{metrics['f1_normal']*100:.2f}%")
+                st.metric("Precision", f"{metrics['precision_normal']*100:.2f}%")
+                st.metric("Recall", f"{metrics['recall_normal']*100:.2f}%")
+            
+            st.markdown("---")
+            
+            # Confusion matrix
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                fig = plot_confusion_matrix(metrics['confusion_matrix'], metrics)
+                st.pyplot(fig)
+            
+            with col2:
+                st.write("**Error Analysis:**")
+                st.metric("Total Errors", f"{metrics['misclassifications']:,}", 
+                         delta=f"{metrics['misclassifications']/total_pred*100:.2f}%", 
+                         delta_color="inverse")
+                
+                cm = metrics['confusion_matrix']
+                false_positives = cm[1, 0] if cm.shape[0] > 1 else 0
+                false_negatives = cm[0, 1] if cm.shape[0] > 1 else 0
+                
+                st.write(f"**False Positives:** {false_positives:,}")
+                st.write(f"- Predicted BROKEN but was NORMAL")
+                st.write(f"- Cost: Unnecessary maintenance")
+                
+                st.write(f"**False Negatives:** {false_negatives:,}")
+                st.write(f"- Predicted NORMAL but was BROKEN")
+                st.write(f"- Cost: Missed failures (Critical!)")
+                
+                if false_negatives > false_positives:
+                    st.warning("⚠️ More false negatives than false positives - consider adjusting threshold")
+        
+        st.markdown("---")
+        
+        # High-risk analysis
+        st.subheader("⚠️ High-Risk Periods")
+        
+        risk_threshold = st.slider("Risk Threshold", 0.0, 1.0, 0.5, 0.05)
+        high_risk_df = df[df['failure_probability'] > risk_threshold].copy()
+        
+        if len(high_risk_df) > 0:
+            st.warning(f"Found {len(high_risk_df):,} time steps above {risk_threshold*100:.0f}% risk threshold")
+            
+            # Risk distribution
+            fig, ax = plt.subplots(figsize=(12, 4))
+            ax.plot(df.index, df['failure_probability'], linewidth=1, color='#3498db', alpha=0.7)
+            ax.fill_between(df.index, df['failure_probability'], 
+                           where=(df['failure_probability'] > risk_threshold),
+                           color='#e74c3c', alpha=0.5, label=f'High Risk (>{risk_threshold*100:.0f}%)')
+            ax.axhline(y=risk_threshold, color='red', linestyle='--', label='Threshold')
+            ax.set_xlabel('Time Step', fontsize=11)
+            ax.set_ylabel('Failure Probability', fontsize=11)
+            ax.set_title(f'Failure Risk Over Time - {len(high_risk_df)} High-Risk Periods', 
+                        fontsize=12, fontweight='bold')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            
+            st.pyplot(fig)
+            
+            # Show high-risk records
+            display_cols = ['timestamp'] if 'timestamp' in high_risk_df.columns else []
+            display_cols += ['failure_probability', 'prediction', 'labels']
+            
+            st.dataframe(
+                high_risk_df[display_cols].head(20).style.background_gradient(
+                    subset=['failure_probability'], cmap='Reds'
+                ),
+                use_container_width=True
+            )
+            
+            # Download predictions
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Full Predictions CSV",
+                data=csv,
+                file_name="pump_predictions.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
         else:
-            st.success("✅ No missing values!")
+            st.success(f"✅ No periods above {risk_threshold*100:.0f}% risk threshold")
 
-
-# DATA PREPARATION PAGE
-elif page == "⚙️ Data Preparation":
-    st.title("⚙️ Complete Data Preparation Pipeline")
-    st.markdown("Run the full data preprocessing and feature engineering pipeline")
+def show_performance(model_package):
+    """Performance and feature importance page"""
+    st.header("📈 Model Performance & Feature Importance")
     
-    col1, col2 = st.columns([2, 1])
+    model = model_package['model']
+    feature_names = model_package['feature_columns']
+    importances = model.feature_importances_
+    
+    # Feature importance dataframe
+    importance_df = pd.DataFrame({
+        'Feature': feature_names,
+        'Importance': importances
+    }).sort_values('Importance', ascending=False)
+    
+    # Overall statistics
+    total_features = len(feature_names)
+    top_10_importance = importance_df.head(10)['Importance'].sum()
+    top_20_importance = importance_df.head(20)['Importance'].sum()
+    
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        uploaded_file = st.file_uploader("Upload CSV (or use demo)", type=['csv'], key="prep")
+        st.metric("Total Features", total_features)
+    with col2:
+        st.metric("Top 10 Contribution", f"{top_10_importance*100:.1f}%")
+    with col3:
+        st.metric("Top 20 Contribution", f"{top_20_importance*100:.1f}%")
+    with col4:
+        most_important = importance_df.iloc[0]
+        st.metric("Most Important", 
+                 most_important['Feature'].replace('_deviation', ''),
+                 delta=f"{most_important['Importance']*100:.2f}%")
     
-    if uploaded_file:
-        st.markdown("### 📋 Pipeline Configuration")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            feature_type = st.radio(
-                "Feature Engineering Method",
-                ['deviation', 'window'],
-                help="deviation: Distance from normal state mean\nwindow: Time window aggregation"
-            )
-        
-        with col2:
-            st.info(f"Selected: {feature_type.upper()}")
-        
-        if st.button("🚀 Run Pipeline", use_container_width=True):
-            with st.spinner("⏳ Running complete data pipeline..."):
-                try:
-                    pipeline_data = prepare_complete_pipeline(
-                        uploaded_file=uploaded_file if uploaded_file  else None,
-                        file_path=None,
-                        feature_type=feature_type
-                    )
-                    
-                    st.session_state.pipeline_data = pipeline_data
-                    
-                    st.success("✅ Pipeline Complete!")
-                    
-                    # Display results
-                    st.markdown("### 📊 Pipeline Results")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    stats = pipeline_data['stats']
-                    with col1:
-                        st.metric("Total Samples", f"{stats['total_samples']:,}")
-                    with col2:
-                        st.metric("Total Features", stats['total_features'])
-                    with col3:
-                        st.metric("Train Samples", f"{stats['train_samples']:,}")
-                    with col4:
-                        st.metric("Test Samples", f"{stats['test_samples']:,}")
-                    
-                    # Class distribution
-                    st.markdown("### 📈 Training Set Class Distribution")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        class_dist = pipeline_data['class_dist_train']
-                        for label, info in class_dist.items():
-                            label_name = "BROKEN" if label == 0 else "NORMAL"
-                            st.metric(
-                                label_name,
-                                f"{info['count']:,}",
-                                f"{info['percentage']:.2f}%"
-                            )
-                    
-                    with col2:
-                        fig = plot_class_distribution(pipeline_data['y_train'])
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Feature matrix visualization
-                    st.markdown("### 📊 Feature Matrix Statistics")
-                    
-                    X_train = pipeline_data['X_train']
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("Min Value", f"{X_train.min().min():.4f}")
-                    with col2:
-                        st.metric("Max Value", f"{X_train.max().max():.4f}")
-                    with col3:
-                        st.metric("Mean Value", f"{X_train.mean().mean():.4f}")
-                    with col4:
-                        st.metric("Std Dev", f"{X_train.std().mean():.4f}")
-                    
-                    # Show timeline
-                    st.markdown("### 📊 Machine Status Timeline")
-                    try:
-                        fig = plot_machine_status_timeline(pipeline_data['y_train'])
-                        st.plotly_chart(fig, use_container_width=True)
-                    except:
-                        st.info("Could not generate timeline visualization")
-                    
-                    # Show correlation heatmap
-                    st.markdown("### 🔥 Feature Correlation Heatmap (Top 20)")
-                    try:
-                        fig = plot_correlation_heatmap(X_train, top_n=20)
-                        st.plotly_chart(fig, use_container_width=True)
-                    except:
-                        st.info("Could not generate correlation heatmap")
-                    
-                    st.info("✅ Data is prepared and ready for model training!")
-                    st.info(f"Feature type: {feature_type.upper()} | Features normalized with MinMaxScaler")
-                    
-                except Exception as e:
-                    st.error(f"❌ Pipeline Error: {str(e)}")
-
-
-# MODEL TRAINING PAGE
-elif page == "🤖 Model Training":
-    st.title("🤖 Random Forest Model Training")
-    st.markdown("Train optimized Random Forest classifier")
+    st.markdown("---")
     
-    if st.session_state.pipeline_data is None:
-        st.warning("⚠️ Please prepare the data pipeline first!")
-        st.info("Go to 'Data Preparation' page and run the pipeline")
-    else:
-        st.markdown("### 📋 Model Configuration")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Criterion", "gini")
-        with col2:
-            st.metric("N Estimators", "150")
-        with col3:
-            st.metric("Max Depth", "5")
-        with col4:
-            st.metric("Jobs", "-1 (All cores)")
-        
-        st.markdown("### 🚀 Start Training")
-        st.info("⚡ Random Forest training - Fast and efficient!")
-        
-        if st.button("🔥 Train Random Forest Model", use_container_width=True):
-            pipeline_data = st.session_state.pipeline_data
-            
-            trainer = ModelTrainer()
-            
-            # Progress tracking
-            status_text = st.empty()
-            progress_bar = st.progress(0)
-            
-            with st.spinner("🔄 Training Random Forest classifier..."):
-                try:
-                    status_text.write("🔄 Training Random Forest (n_estimators=150, max_depth=5)...")
-                    progress_bar.progress(50)
-                    
-                    # Train model
-                    trainer.train_random_forest(pipeline_data['X_train'], pipeline_data['y_train'])
-                    progress_bar.progress(75)
-                    
-                    status_text.write("📊 Evaluating on test set...")
-                    # Evaluate model
-                    trainer.evaluate_model(pipeline_data['X_test'], pipeline_data['y_test'])
-                    progress_bar.progress(100)
-                    
-                    status_text.write("✅ Training complete!")
-                    
-                except Exception as e:
-                    st.error(f"❌ Training failed: {str(e)}")
-                    st.stop()
-            
-            st.session_state.trainer = trainer
-            
-            st.success("✅ Random Forest Model Trained Successfully!")
-            
-            # Display model info
-            st.markdown("### 🏆 Model Information")
-            
-            model_info = trainer.get_model_info()
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Model Type", model_info['name'])
-            with col2:
-                st.metric("Estimators", model_info['n_estimators'])
-            with col3:
-                st.metric("Max Depth", model_info['max_depth'])
-            with col4:
-                st.metric("Status", model_info['status'])
-            
-            # Display results
-            st.markdown("### 📊 Model Performance Metrics")
-            
-            results = trainer.results
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Accuracy", f"{results['accuracy']:.4f}", 
-                         f"{results['accuracy']*100:.2f}%")
-            with col2:
-                st.metric("F1 Score (Macro)", f"{results['f1_macro']:.4f}")
-            with col3:
-                st.metric("F1 Score (Weighted)", f"{results['f1_weighted']:.4f}")
-            with col4:
-                st.metric("Total Misclassifications", results['misclassifications'])
-            
-            # Detailed metrics
-            st.markdown("### 📈 Detailed Performance")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("False Negatives (Critical)", results['broken_false_negatives'],
-                         help="Broken equipment predicted as Normal")
-            with col2:
-                st.metric("False Positives", results['broken_false_positives'],
-                         help="Normal equipment predicted as Broken")
-            with col3:
-                st.metric("Broken Recall", f"{results['recall'][0]:.4f}",
-                         help="% of broken equipment correctly identified")
-            with col4:
-                st.metric("Normal Recall", f"{results['recall'][1]:.4f}",
-                         help="% of normal equipment correctly identified")
-            
-            # Show confusion matrix
-            st.markdown("### 📊 Confusion Matrix")
-            
-            y_pred = trainer.model.predict(pipeline_data['X_test'])
-            fig = plot_confusion_matrix(
-                pipeline_data['y_test'].values,
-                y_pred
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Feature importance
-            st.markdown("### 🎯 Feature Importance - Top 20 Sensors")
-            
-            try:
-                importance_df = trainer.get_feature_importance(
-                    pipeline_data['X_train'].columns.tolist()
-                )
-                
-                st.dataframe(importance_df.head(20), use_container_width=True)
-                
-                fig = plot_feature_importance(importance_df, top_n=20, 
-                                            title="Top 20 Most Important Features")
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.warning(f"Could not generate feature importance: {str(e)[:50]}")
-
-
-# LIVE PREDICTIONS PAGE
-elif page == "🔮 Live Predictions":
-    st.title("🔮 Live Machine Failure Prediction")
-    st.markdown("Make real-time predictions using the trained model")
+    # Feature importance visualization
+    st.subheader("🏆 Top Feature Importance")
     
-    if st.session_state.trainer is None:
-        st.warning("⚠️ Please train models first!")
-        st.info("Go to 'Model Training' page")
-    else:
-        trainer = st.session_state.trainer
-        pipeline_data = st.session_state.pipeline_data
-        
-        # Get model
-        model = trainer.model
-        scaler = pipeline_data['scaler']
-        
-        st.markdown(f"### 🏆 Using Random Forest Model")
-        st.info(f"✅ Model: n_estimators=150, max_depth=5, criterion=gini")
-        
-        # Three options for input
-        st.markdown("### 📝 Choose Input Method")
-        
-        input_method = st.radio(
-            "Select how to provide sensor data:",
-            ["Manual Input", "Random Sample", "Upload Test Data"],
-            horizontal=True
+    n_features = st.slider("Number of top features to display", 5, 30, 15)
+    
+    col1, col2 = st.columns([2, 3])
+    
+    with col1:
+        st.dataframe(
+            importance_df.head(n_features).style.background_gradient(
+                subset=['Importance'], cmap='viridis'
+            ),
+            use_container_width=True
         )
-        
-        sensor_values = {}
-        feature_cols = pipeline_data['X_test'].columns.tolist()
-        
-        if input_method == "Manual Input":
-            st.markdown("### 📝 Input Sensor Readings")
-            
-            num_cols = 5
-            display_cols = feature_cols[:10]
-            
-            cols = st.columns(num_cols)
-            for idx, feature in enumerate(display_cols):
-                col_idx = idx % num_cols
-                
-                with cols[col_idx]:
-                    sensor_values[feature] = st.number_input(
-                        feature,
-                        value=0.5,
-                        min_value=0.0,
-                        max_value=1.0,
-                        step=0.01
-                    )
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            if st.button("🔮 Predict Machine Status", use_container_width=True):
-                # Create input dataframe with all features
-                input_dict = {}
-                for col in feature_cols:
-                    if col in sensor_values:
-                        input_dict[col] = sensor_values[col]
-                    else:
-                        input_dict[col] = 0.5
-                
-                input_df = pd.DataFrame([input_dict])
-                
-                # Make prediction
-                prediction, probabilities = predict_with_confidence(model, input_df)
-                failure_prob = probabilities[0][0]
-                
-                # Get recommendation
-                recommendation = get_maintenance_recommendation(failure_prob)
-                
-                st.markdown("### 📊 Prediction Results")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.markdown(f"""
-                        <div style="padding: 1.5rem; background-color: {recommendation['color']}20; 
-                                   border-left: 4px solid {recommendation['color']}; border-radius: 5px;">
-                            <h2>{recommendation['icon']}</h2>
-                            <h3>{recommendation['status']}</h3>
-                            <p><strong>{recommendation['message']}</strong></p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    st.metric("Failure Probability", f"{failure_prob*100:.1f}%")
-                    st.metric("Normal Probability", f"{(1-failure_prob)*100:.1f}%")
-                
-                with col3:
-                    st.metric("Priority Level", recommendation['priority'])
-                
-                # Gauge chart
-                fig = plot_probability_gauge(failure_prob)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Recommendation
-                st.markdown("### 💡 Action Recommended")
-                st.info(recommendation['description'])
-        
-        elif input_method == "Random Sample":
-            st.markdown("### 🎲 Generate Random Sensor Readings")
-            
-            if st.button("🎲 Generate Random Sample", use_container_width=True):
-                for col in feature_cols:
-                    sensor_values[col] = np.random.uniform(0.3, 0.7)
-                
-                # Make prediction
-                input_df = pd.DataFrame([sensor_values])
-                prediction, probabilities = predict_with_confidence(model, input_df)
-                failure_prob = probabilities[0][0]
-                
-                recommendation = get_maintenance_recommendation(failure_prob)
-                
-                st.markdown("### 📊 Prediction Results")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.markdown(f"""
-                        <div style="padding: 1.5rem; background-color: {recommendation['color']}20; 
-                                   border-left: 4px solid {recommendation['color']}; border-radius: 5px;">
-                            <h2>{recommendation['icon']}</h2>
-                            <h3>{recommendation['status']}</h3>
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    st.metric("Failure Probability", f"{failure_prob*100:.1f}%")
-                
-                with col3:
-                    st.metric("Priority", recommendation['priority'])
-                
-                fig = plot_probability_gauge(failure_prob)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                st.info(recommendation['description'])
-        
-        else:  # Upload Test Data
-            st.markdown("### 📤 Upload Test Dataset")
-            
-            test_file = st.file_uploader("Upload test CSV file", type=['csv'], key="test_pred")
-            
-            if test_file is not None:
-                test_df = pd.read_csv(test_file)
-                st.success(f"✅ Loaded test data: {len(test_df)} samples")
-                
-                st.markdown(f"### 🔍 Test Data Overview")
-                st.dataframe(test_df.head(), use_container_width=True)
-                
-                st.markdown("### 📋 Available Columns in Your File:")
-                st.write(f"**Found {len(test_df.columns)} columns:** {', '.join(test_df.columns[:10])}")
-                
-                if st.button("🔮 Predict All Samples", use_container_width=True):
-                    with st.spinner("Making predictions..."):
-                        try:
-                            # Normalize the test data using the saved scaler
-                            scaler = pipeline_data['scaler']
-                            
-                            # Prepare test data (match feature columns)
-                            test_prepared = pd.DataFrame()
-                            for col in feature_cols:
-                                if col in test_df.columns:
-                                    test_prepared[col] = test_df[col].astype(float)
-                                else:
-                                    test_prepared[col] = 0.5
-                            
-                            # Check if we have data
-                            if len(test_prepared) == 0:
-                                st.error("❌ No valid data to predict. Please check your CSV file.")
-                            else:
-                                st.info(f"✅ Prepared {len(test_prepared)} samples with {len(feature_cols)} features")
-                                
-                                # Normalize using the scaler
-                                test_scaled = scaler.transform(test_prepared.values)
-                                test_prepared_scaled = pd.DataFrame(test_scaled, columns=feature_cols)
-                                
-                                # Make predictions
-                                predictions, probabilities = predict_with_confidence(best_model, test_prepared_scaled)
-                                failure_probs = probabilities[:, 0]
-                                
-                                # Create results dataframe
-                                results_df = test_df.copy()
-                                results_df['Failure_Probability'] = failure_probs
-                                results_df['Failure_Percentage'] = (failure_probs * 100).round(2)
-                                results_df['Status'] = results_df['Failure_Probability'].apply(
-                                    lambda x: 'CRITICAL' if x > 0.7 else ('WARNING' if x > 0.3 else 'NORMAL')
-                                )
-                                results_df['Prediction'] = predictions
-                                
-                                st.markdown("### 📊 Prediction Results for All Samples")
-                                
-                                col1, col2, col3, col4 = st.columns(4)
-                                with col1:
-                                    st.metric("Total Samples", len(results_df))
-                                with col2:
-                                    st.metric("Critical", (results_df['Status'] == 'CRITICAL').sum())
-                                with col3:
-                                    st.metric("Warning", (results_df['Status'] == 'WARNING').sum())
-                                with col4:
-                                    st.metric("Normal", (results_df['Status'] == 'NORMAL').sum())
-                                
-                                st.markdown("#### 📋 First 20 Predictions")
-                                display_cols = ['Failure_Probability', 'Failure_Percentage', 'Status', 'Prediction']
-                                st.dataframe(results_df[display_cols].head(20), use_container_width=True)
-                                
-                                # Download results
-                                csv = results_df.to_csv(index=False)
-                                st.download_button(
-                                    label="📥 Download Predictions CSV",
-                                    data=csv,
-                                    file_name="predictions.csv",
-                                    mime="text/csv"
-                                )
-                                
-                                # Distribution of predictions
-                                st.markdown("### 📈 Prediction Distribution")
-                                try:
-                                    fig = plot_class_distribution(results_df['Prediction'].astype(int))
-                                    st.plotly_chart(fig, use_container_width=True)
-                                except:
-                                    st.info("Could not generate distribution chart")
-                                
-                                # Status breakdown
-                                st.markdown("### 🎯 Status Breakdown")
-                                status_dist = results_df['Status'].value_counts()
-                                col1, col2, col3 = st.columns(3)
-                                
-                                with col1:
-                                    normal_count = status_dist.get('NORMAL', 0)
-                                    normal_pct = (normal_count/len(results_df)*100) if len(results_df) > 0 else 0
-                                    st.metric("🟢 Normal", normal_count, f"{normal_pct:.1f}%")
-                                with col2:
-                                    warning_count = status_dist.get('WARNING', 0)
-                                    warning_pct = (warning_count/len(results_df)*100) if len(results_df) > 0 else 0
-                                    st.metric("🟡 Warning", warning_count, f"{warning_pct:.1f}%")
-                                with col3:
-                                    critical_count = status_dist.get('CRITICAL', 0)
-                                    critical_pct = (critical_count/len(results_df)*100) if len(results_df) > 0 else 0
-                                    st.metric("🔴 Critical", critical_count, f"{critical_pct:.1f}%")
-                                
-                        except Exception as e:
-                            st.error(f"❌ Prediction Error: {str(e)}")
-                            st.info("💡 Make sure your CSV has the same sensor columns as the training data")
-
-
-# FEATURE INSIGHTS PAGE
-elif page == "💡 Feature Insights":
-    st.title("💡 Feature Importance & Business Insights")
     
-    if st.session_state.trainer is None:
-        st.warning("⚠️ Please train the model first!")
-    else:
-        trainer = st.session_state.trainer
-        pipeline_data = st.session_state.pipeline_data
+    with col2:
+        fig, ax = plt.subplots(figsize=(10, 8))
+        top_n = importance_df.head(n_features)
+        colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(top_n)))
         
-        col1, col2 = st.columns(2)
+        bars = ax.barh(range(len(top_n)), top_n['Importance'], color=colors)
+        ax.set_yticks(range(len(top_n)))
+        ax.set_yticklabels([f.replace('_deviation', '') for f in top_n['Feature']], fontsize=9)
+        ax.set_xlabel('Importance Score', fontsize=11)
+        ax.set_title(f'Top {n_features} Most Important Features', fontsize=12, fontweight='bold')
+        ax.invert_yaxis()
+        ax.grid(True, alpha=0.3, axis='x')
         
-        with col1:
-            st.markdown("#### 💰 Cost Savings Calculator")
-            
-            failures_prevented = st.slider("Failures prevented per year", 5, 200, 50)
-            cost_per_failure = st.number_input("Cost per failure ($)", value=50000, min_value=1000)
-            implementation_cost = st.number_input("Implementation cost ($)", value=50000, min_value=1000)
-            
-            savings = calculate_cost_savings(failures_prevented, cost_per_failure, implementation_cost)
-            
-            col_s1, col_s2 = st.columns(2)
-            
-            with col_s1:
-                st.metric("Total Savings", f"${savings['total_savings']:,.0f}")
-                st.metric("Net Savings", f"${savings['net_savings']:,.0f}")
-            
-            with col_s2:
-                st.metric("ROI", f"{savings['roi_percentage']:.1f}%")
-                payback = savings['payback_period_months']
-                payback_text = f"{payback:.1f} months" if payback != float('inf') else "N/A"
-                st.metric("Payback Period", payback_text)
+        for i, bar in enumerate(bars):
+            width = bar.get_width()
+            ax.text(width, bar.get_y() + bar.get_height()/2, 
+                   f'{width:.4f}', ha='left', va='center', fontsize=8)
         
-        with col2:
-            st.markdown("#### 📈 Random Forest Performance")
-            
-            results = trainer.results
-            
-            st.metric("Accuracy", f"{results['accuracy']:.4f}")
-            st.metric("F1 Score", f"{results['f1_macro']:.4f}")
-            st.metric("False Negatives", results['broken_false_negatives'])
-            st.metric("False Positives", results['broken_false_positives'])
-        
-        # Feature importance
-        st.markdown("### 🎯 Top 20 Most Important Sensors")
-        
-        try:
-            importance_df = trainer.get_feature_importance(
-                pipeline_data['X_train'].columns.tolist()
-            )
-            
-            st.dataframe(importance_df.head(20), use_container_width=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                fig = plot_feature_importance(importance_df, top_n=15, title="Top 15 Features")
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                fig = plot_feature_importance(importance_df, top_n=20, title="Top 20 Features")
-                st.plotly_chart(fig, use_container_width=True)
-            
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-
-
-# ABOUT PAGE
-else:  # About
-    st.title("📄 About & Technical Details")
+        plt.tight_layout()
+        st.pyplot(fig)
     
-    st.markdown("## 🎯 Project Overview")
-    st.markdown("""
-    This is a complete machine learning pipeline for predictive maintenance of water pump units,
-    built from scratch following best practices in data science and ML engineering.
-    """)
+    st.markdown("---")
     
-    st.markdown("## 📊 Pipeline Steps")
+    # Cumulative importance
+    st.subheader("📊 Cumulative Feature Importance")
     
-    with st.expander("1️⃣ Data Loading & Exploration", expanded=True):
-        st.markdown("""
-        - Load sensor data from CSV
-        - Analyze missing values and distributions
-        - Identify problematic sensors
-        - Basic statistics and class distribution
-        """)
+    importance_df['Cumulative'] = importance_df['Importance'].cumsum()
     
-    with st.expander("2️⃣ Data Preprocessing"):
-        st.markdown("""
-        - Drop sensor_15 (excessive missing values)
-        - Fill remaining missing values with -1
-        - Remove status columns (will be recreated)
-        - Prepare data for label shifting
-        """)
-    
-    with st.expander("3️⃣ Label Creation & Shifting"):
-        st.markdown("""
-        - Map machine_status to binary labels (1=NORMAL, 0=BROKEN)
-        - Shift labels -10 steps (10-minute advance warning)
-        - Remove rows with NaN after shifting
-        - Enables prediction of future failures
-        """)
-    
-    with st.expander("4️⃣ Feature Engineering"):
-        st.markdown("""
-        **Method 1: Deviation Features**
-        ```
-        deviation = sensor_reading - mean(normal_state_readings)
-        ```
-        Captures how far readings deviate from healthy baselines.
-        
-        **Method 2: Time Window Features**
-        ```
-        window_mean = rolling_mean(sensor, window=10)
-        ```
-        Smooths noise and captures trending behavior.
-        """)
-    
-    with st.expander("5️⃣ Data Normalization"):
-        st.markdown("""
-        - MinMaxScaler: scale all features to [0, 1]
-        - Fit scaler on training data only
-        - Transform test data using training scaler
-        - Prevents data leakage
-        """)
-    
-    with st.expander("6️⃣ Train/Test Split"):
-        st.markdown("""
-        - Time-based split (not random)
-        - First 131,000 samples: training
-        - Remaining samples: testing
-        - Preserves temporal relationships in data
-        """)
-    
-    with st.expander("7️⃣ Model Training & Optimization"):
-        st.markdown("""
-        **Models Trained:**
-        1. **Logistic Regression** - Fast baseline
-        2. **SVM (SGD)** - Efficient for large datasets
-        3. **Random Forest** - Ensemble, handles non-linearity
-        4. **XGBoost** - Gradient boosting, state-of-the-art
-        
-        **Optimization Method:**
-        - Time Series Cross-Validation (5 folds)
-        - Grid Search over hyperparameters
-        - Macro F1 Score as optimization metric
-        
-        **Best Model Selection:**
-        - Prioritize: Lowest False Negatives (missed failures)
-        - Secondary: Highest Accuracy
-        """)
-    
-    with st.expander("8️⃣ Evaluation"):
-        st.markdown("""
-        **Metrics Calculated:**
-        - Accuracy
-        - F1 Score (Macro and Weighted)
-        - Confusion Matrix
-        - Precision & Recall per class
-        - False Negatives (critical for maintenance)
-        - False Positives (unnecessary maintenance)
-        """)
-    
-    st.markdown("## 🛠️ Technologies Used")
+    # Find thresholds
+    features_80 = (importance_df['Cumulative'] <= 0.8).sum()
+    features_90 = (importance_df['Cumulative'] <= 0.9).sum()
+    features_95 = (importance_df['Cumulative'] <= 0.95).sum()
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.markdown("**ML & Data**")
-        st.markdown("""
-        - pandas
-        - NumPy
-        - scikit-learn
-        - XGBoost
-        """)
+        st.metric("Features for 80%", features_80,
+                 delta=f"{features_80/total_features*100:.1f}% of features")
+    with col2:
+        st.metric("Features for 90%", features_90,
+                 delta=f"{features_90/total_features*100:.1f}% of features")
+    with col3:
+        st.metric("Features for 95%", features_95,
+                 delta=f"{features_95/total_features*100:.1f}% of features")
+    
+    # Plot cumulative importance
+    fig, ax = plt.subplots(figsize=(12, 5))
+    
+    x_vals = range(len(importance_df))
+    ax.plot(x_vals, importance_df['Cumulative'], linewidth=2, color='#e74c3c')
+    ax.fill_between(x_vals, importance_df['Cumulative'], alpha=0.3, color='#e74c3c')
+    
+    # Add threshold lines
+    ax.axhline(y=0.8, color='green', linestyle='--', 
+              label=f'80% ({features_80} features)', linewidth=1.5)
+    ax.axhline(y=0.9, color='orange', linestyle='--', 
+              label=f'90% ({features_90} features)', linewidth=1.5)
+    ax.axhline(y=0.95, color='red', linestyle='--', 
+              label=f'95% ({features_95} features)', linewidth=1.5)
+    
+    # Add vertical lines
+    ax.axvline(x=features_80, color='green', linestyle=':', alpha=0.5)
+    ax.axvline(x=features_90, color='orange', linestyle=':', alpha=0.5)
+    ax.axvline(x=features_95, color='red', linestyle=':', alpha=0.5)
+    
+    ax.set_xlabel('Number of Features', fontsize=11)
+    ax.set_ylabel('Cumulative Importance', fontsize=11)
+    ax.set_title('Cumulative Feature Importance', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    st.pyplot(fig)
+    
+    st.markdown("---")
+    
+    # Maintenance priority recommendations
+    st.subheader("🎯 Sensor Monitoring Priority")
+    
+    # Categorize by importance
+    tier1 = importance_df.head(5)
+    tier2 = importance_df.iloc[5:12]
+    tier3 = importance_df.iloc[12:20]
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("### 🔴 Critical Priority")
+        st.write(f"**Monitor continuously** ({len(tier1)} sensors)")
+        st.metric("Combined Importance", f"{tier1['Importance'].sum()*100:.1f}%")
+        for idx, row in tier1.iterrows():
+            sensor = row['Feature'].replace('_deviation', '')
+            st.write(f"• `{sensor}` ({row['Importance']*100:.2f}%)")
     
     with col2:
-        st.markdown("**Visualization**")
-        st.markdown("""
-        - Plotly
-        - Matplotlib
-        - Seaborn
-        """)
+        st.markdown("### 🟡 High Priority")
+        st.write(f"**Regular checks** ({len(tier2)} sensors)")
+        st.metric("Combined Importance", f"{tier2['Importance'].sum()*100:.1f}%")
+        for idx, row in tier2.iterrows():
+            sensor = row['Feature'].replace('_deviation', '')
+            st.write(f"• `{sensor}` ({row['Importance']*100:.2f}%)")
     
     with col3:
-        st.markdown("**Deployment**")
-        st.markdown("""
-        - Streamlit
-        - Python 3.8+
-        """)
+        st.markdown("### 🟢 Medium Priority")
+        st.write(f"**Periodic inspection** ({len(tier3)} sensors)")
+        st.metric("Combined Importance", f"{tier3['Importance'].sum()*100:.1f}%")
+        for idx, row in tier3.head(5).iterrows():
+            sensor = row['Feature'].replace('_deviation', '')
+            st.write(f"• `{sensor}` ({row['Importance']*100:.2f}%)")
+        if len(tier3) > 5:
+            st.write(f"*...and {len(tier3)-5} more*")
     
-    st.markdown("## 👨‍💻 Developer")
+    # Download feature importance
+    csv = importance_df.to_csv(index=False)
+    st.download_button(
+        label="📥 Download Feature Importance Data",
+        data=csv,
+        file_name="feature_importance.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
     
-    st.markdown("""
-    **Eng. Mohammed Osman**
+    st.markdown("---")
     
-    Applied Data Scientist | Predictive Maintenance Specialist
+    # Decision-making insights
+    st.subheader("💡 Actionable Insights")
     
-    - 7+ years structural engineering
-    - ML expertise in predictive analytics
-    - Portfolio: https://github.com/Mo7ammedAOS
-    - Email: mohammedossidahmed@gmail.com
-    - LinkedIn: https://www.linkedin.com/in/mohammed-abelmoneim-5415991b6/
+    st.markdown(f"""
+    ### Key Findings:
+    
+    1. **Model Efficiency**: Only **{features_80} sensors** ({features_80/total_features*100:.1f}%) 
+       contribute to 80% of prediction accuracy
+       - **Action**: Focus maintenance resources on these critical sensors
+    
+    2. **Sensor Redundancy**: {total_features - features_95} sensors contribute less than 5% 
+       to predictions
+       - **Action**: Consider reducing monitoring costs for low-importance sensors
+    
+    3. **Top Sensor**: `{importance_df.iloc[0]['Feature'].replace('_deviation', '')}` alone 
+       provides {importance_df.iloc[0]['Importance']*100:.2f}% of predictive power
+       - **Action**: This sensor should never fail; implement redundant monitoring
+    
+    4. **Cost Optimization**: Monitoring top {features_90} sensors provides 90% accuracy
+       - **Potential Savings**: Could reduce monitoring infrastructure by {(1 - features_90/total_features)*100:.1f}%
+    
+    5. **Failure Detection**: With current model:
+       - Top 10 sensors provide {top_10_importance*100:.1f}% coverage
+       - **Recommendation**: Implement real-time alerts on these sensors
     """)
+
+if __name__ == "__main__":
+    main()
