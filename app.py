@@ -894,7 +894,6 @@ def show_performance(model_package):
     
     5. **Failure Detection**: With current model:
        - Top 10 sensors provide {top_10_importance*100:.1f}% coverage
-       - **Recommendation**: Implement real-time alerts on these sensors
     """)
 
 if __name__ == "__main__":
